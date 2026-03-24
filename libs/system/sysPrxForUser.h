@@ -120,6 +120,9 @@ s32 sys_lwmutex_trylock(sys_lwmutex_t_hle* lwmutex);
 s32 sys_lwmutex_unlock(sys_lwmutex_t_hle* lwmutex);
 s32 sys_lwmutex_destroy(sys_lwmutex_t_hle* lwmutex);
 
+/* Reset all lwmutex/lwcond state — call before CRT redirect to game main */
+void sys_lwmutex_reset_all(void);
+
 /* ---------------------------------------------------------------------------
  * Lightweight condition variable
  * -----------------------------------------------------------------------*/

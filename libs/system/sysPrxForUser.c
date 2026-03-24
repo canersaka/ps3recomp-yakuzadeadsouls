@@ -41,6 +41,22 @@ typedef struct {
 static LwMutexSlot s_lwmutex[MAX_LWMUTEX];
 static u32 s_lwmutex_next = 0;
 
+/* Reset all lwmutex/lwcond state — call before CRT redirect to game main */
+void sys_lwmutex_reset_all(void)
+{
+    for (u32 i = 0; i < MAX_LWMUTEX; i++) {
+        if (s_lwmutex[i].in_use) {
+#ifdef _WIN32
+            DeleteCriticalSection(&s_lwmutex[i].cs);
+#else
+            pthread_mutex_destroy(&s_lwmutex[i].mtx);
+#endif
+        }
+    }
+    memset(s_lwmutex, 0, sizeof(s_lwmutex));
+    s_lwmutex_next = 0;
+}
+
 /* ---------------------------------------------------------------------------
  * Internal: Lightweight cond table
  * -----------------------------------------------------------------------*/
