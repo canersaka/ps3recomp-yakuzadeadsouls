@@ -446,20 +446,22 @@ def decode(insn: int, addr: int = 0) -> Instruction:
         sub4 = bits(insn, 27, 30)  # 4-bit sub-opcode
         sub3 = bits(insn, 27, 29)  # 3-bit sub-opcode (for register forms)
 
-        rld_imm_ops = {0: "rldicl", 1: "rldicr", 2: "rldic", 3: "rldimi"}
-        if sub4 in rld_imm_ops:
+        # MD form: XO is bits 27-29 (3-bit), bit 30 is sh[5]
+        # MDS form: XO is bits 27-30 (4-bit, values 8=rldcl, 9=rldcr)
+        md_ops = {0: "rldicl", 1: "rldicr", 2: "rldic", 3: "rldimi"}
+        if sub3 in md_ops:
             sh = (bits(insn, 16, 20) | (bit(insn, 30) << 5))
             mb = (bits(insn, 21, 25) | (bit(insn, 26) << 5))
-            mne = rld_imm_ops[sub4] + ("." if rc else "")
+            mne = md_ops[sub3] + ("." if rc else "")
             result.mnemonic = mne
             result.operands = f"r{ra}, r{rd}, {sh}, {mb}"
-        elif sub3 == 4:  # rldcl (sub bits 27-29 = 100)
+        elif sub4 == 8:  # rldcl (MDS form)
             rb = bits(insn, 16, 20)
             mb = (bits(insn, 21, 25) | (bit(insn, 26) << 5))
             mne = "rldcl" + ("." if rc else "")
             result.mnemonic = mne
             result.operands = f"r{ra}, r{rd}, r{rb}, {mb}"
-        elif sub3 == 5:  # rldcr (sub bits 27-29 = 101)
+        elif sub4 == 9:  # rldcr (MDS form)
             rb = bits(insn, 16, 20)
             me = (bits(insn, 21, 25) | (bit(insn, 26) << 5))
             mne = "rldcr" + ("." if rc else "")

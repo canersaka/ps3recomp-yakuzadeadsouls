@@ -211,10 +211,9 @@ Functions are named `func_XXXXXXXX` where `XXXXXXXX` is the guest address in hex
 
 **Split-function trampoline:** When a function ends without `blr`/`b`, or when a branch targets a different split fragment, the lifter emits a trampoline pattern instead of a direct call:
 ```c
-{ extern void (*g_trampoline_fn)(void*);
-  g_trampoline_fn = (void(*)(void*))func_NEXT; return; }
+{ g_trampoline_fn = (void(*)(void*))func_NEXT; return; }
 ```
-The game project must define `g_trampoline_fn` globally and add `DRAIN_TRAMPOLINE(ctx)` after every `bl` (function call) in the generated code. This converts recursive split-function chains into iterative loops, preventing both native and guest stack overflow from backward branches across fragment boundaries.
+The preamble declares `g_trampoline_fn` as `extern "C" __declspec(thread)` to match the TLS definition in the game project's `indirect_dispatch.cpp`. The game project must define `g_trampoline_fn` as `__declspec(thread)` and add `DRAIN_TRAMPOLINE(ctx)` after every `bl` (function call) in the generated code. This converts recursive split-function chains into iterative loops, preventing both native and guest stack overflow from backward branches across fragment boundaries.
 
 **Indirect calls (bctrl):** Emitted as `ps3_indirect_call(ctx)` which dispatches through a hash table mapping guest addresses to host function pointers. The game project must provide this function. It also handles OPD (Official Procedure Descriptor) resolution.
 
