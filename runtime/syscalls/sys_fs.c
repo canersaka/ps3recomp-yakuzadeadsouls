@@ -288,12 +288,20 @@ int64_t sys_fs_lseek(ppu_context* ctx)
     uint32_t pos_addr  = LV2_ARG_PTR(ctx, 3);
 
     int slot = fd - 3;
-    if (slot < 0 || slot >= SYS_FS_FD_MAX)
-        return (int64_t)(int32_t)CELL_EBADF;
+    if (slot < 0 || slot >= SYS_FS_FD_MAX) {
+        /* Invalid fd — return position 0 instead of EBADF.
+         * The CRT may call lseek on uninitialized FILE structures. */
+        if (pos_addr)
+            write_be64(pos_addr, 0);
+        return 0;
+    }
 
     sys_fs_fd_info* f = &g_sys_fs_fds[slot];
-    if (!f->active || !f->fp)
-        return (int64_t)(int32_t)CELL_EBADF;
+    if (!f->active || !f->fp) {
+        if (pos_addr)
+            write_be64(pos_addr, 0);
+        return 0;
+    }
 
     int origin;
     switch (whence) {
