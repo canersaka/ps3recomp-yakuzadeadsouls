@@ -935,6 +935,7 @@ def decode(insn: int, addr: int = 0) -> Instruction:
             10: "vaddfp", 74: "vsubfp",
             266: "vrefp", 330: "vrsqrtefp",
             1034: "vmaxfp", 1098: "vminfp",
+            714: "vrfim",  # round to FP integer toward -inf (floor)
 
             # Integer add/sub
             0: "vaddubm", 64: "vadduhm", 128: "vadduwm",
@@ -1230,4 +1231,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-                        
