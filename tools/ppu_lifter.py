@@ -16,6 +16,7 @@ import json
 import os
 import re
 import sys
+import time
 from dataclasses import dataclass, field
 
 # ---------------------------------------------------------------------------
@@ -48,21 +49,28 @@ typedef union {
     float    f[4];
 } ppu_vr;
 
+/* Field order and types match runtime/ppu/ppu_context.h exactly, so the
+ * same pointer can flow between recompiled code and runtime syscall
+ * handlers without layout drift. Keep the two in sync. */
 typedef struct ppu_context {
     uint64_t gpr[32];   /* General-purpose registers  */
     double   fpr[32];   /* Floating-point registers   */
-    ppu_vr   vr[32];    /* VMX/AltiVec vector regs    */
+#ifdef _MSC_VER
+    __declspec(align(16)) ppu_vr vr[32];  /* VMX/AltiVec vector regs */
+#else
+    ppu_vr   vr[32] __attribute__((aligned(16)));
+#endif
     uint32_t cr;        /* Condition register          */
     uint64_t lr;        /* Link register               */
     uint64_t ctr;       /* Count register              */
-    uint64_t xer;       /* Fixed-point exception reg   */
-    uint32_t vscr;      /* Vector status/control reg   */
+    uint32_t xer;       /* Fixed-point exception reg   */
     uint32_t fpscr;     /* FP status/control register  */
-    uint64_t pc;        /* Program counter             */
+    uint32_t vscr;      /* Vector status/control reg   */
     uint64_t cia;       /* Current instruction address */
+    uint64_t thread_id;     /* PPU thread ID              */
     uint64_t reserve_addr;  /* lwarx/stwcx. reservation address */
-    uint32_t reserve_value; /* lwarx/stwcx. reservation value   */
-    uint32_t thread_id;     /* PPU thread ID              */
+    uint64_t reserve_value; /* lwarx/stwcx. reservation value   */
+    int      reserve_valid; /* lwarx/stwcx. reservation flag    */
 } ppu_context;
 
 /* Memory access helpers (provided by runtime) */
@@ -86,6 +94,18 @@ void     vm_write64(uint64_t addr, uint64_t val);
 extern "C"
 #endif
 void lv2_syscall(ppu_context* ctx);
+
+/* Function table (defined in the generated source, sentinel-terminated).
+ * The game project's indirect-call dispatcher builds its lookup from this. */
+typedef struct { uint64_t addr; void (*func)(ppu_context*); const char* name; } func_entry;
+#ifdef __cplusplus
+extern "C" {
+#endif
+extern const func_entry function_table[];
+extern const uint64_t  function_table_count;  /* entries, excluding sentinel */
+#ifdef __cplusplus
+}
+#endif
 
 """
 
@@ -264,7 +284,30 @@ class PPULifter:
     # Per-instruction translation
     # ------------------------------------------------------------------ #
 
+    # Record-form (Rc=1) integer ops also set CR0 from a signed compare of
+    # the result against zero, plus XER[SO]. The op handlers produce the
+    # arithmetic; the _translate wrapper appends the CR0 update for any
+    # dot-form whose first operand is the destination GPR. Excluded:
+    # stwcx./stdcx. (their handlers set CR0 themselves), FP dot-forms
+    # (those set CR1), VMX dot-forms (those set CR6), mt*/mf* specials.
+    _CR0_SELF_HANDLED = ("stwcx.", "stdcx.")
+
     def _translate(self, insn: Instruction, func: LiftedFunction) -> str:
+        code = self._translate_op(insn, func)
+        mn = insn.mnemonic
+        if (mn.endswith(".") and code and not code.startswith("/*")
+                and mn not in self._CR0_SELF_HANDLED
+                and not mn.startswith(("f", "v", "mt", "mf"))):
+            ops = _parse_operands(insn.operands)
+            m = re.match(r"r(\d+)$", ops[0]) if ops else None
+            if m:
+                code += (f" {{ int64_t _r = (int64_t)ctx->gpr[{m.group(1)}]; "
+                         f"uint32_t _c = (_r < 0) ? 8u : (_r > 0) ? 4u : 2u; "
+                         f"_c |= (uint32_t)((ctx->xer >> 31) & 1u); "
+                         f"ctx->cr = (ctx->cr & 0x0FFFFFFFu) | (_c << 28); }}")
+        return code
+
+    def _translate_op(self, insn: Instruction, func: LiftedFunction) -> str:
         """Translate one Instruction to a C statement string."""
         mn = insn.mnemonic
         ops = _parse_operands(insn.operands)
@@ -911,7 +954,7 @@ class PPULifter:
                     f"ctx->gpr[{ra}] / ctx->gpr[{rb}] : 0;")
 
         # ------- Add/subtract extended (with carry) -------
-        if mn == "adde":
+        if mn in ("adde", "adde."):
             rd, ra, rb = _reg_idx(ops[0]), _reg_idx(ops[1]), _reg_idx(ops[2])
             return (f"{{ uint64_t ca = (ctx->xer >> 29) & 1; "
                     f"uint64_t result = ctx->gpr[{ra}] + ctx->gpr[{rb}] + ca; "
@@ -919,7 +962,7 @@ class PPULifter:
                     f"((result < ctx->gpr[{ra}] || (ca && result == ctx->gpr[{ra}])) ? (1u << 29) : 0); "
                     f"ctx->gpr[{rd}] = result; }}")
 
-        if mn == "addze":
+        if mn in ("addze", "addze."):
             rd, ra = _reg_idx(ops[0]), _reg_idx(ops[1])
             return (f"{{ uint64_t ca = (ctx->xer >> 29) & 1; "
                     f"uint64_t result = ctx->gpr[{ra}] + ca; "
@@ -927,7 +970,7 @@ class PPULifter:
                     f"((result < ctx->gpr[{ra}]) ? (1u << 29) : 0); "
                     f"ctx->gpr[{rd}] = result; }}")
 
-        if mn == "subfe":
+        if mn in ("subfe", "subfe."):
             rd, ra, rb = _reg_idx(ops[0]), _reg_idx(ops[1]), _reg_idx(ops[2])
             return (f"{{ uint64_t ca = (ctx->xer >> 29) & 1; "
                     f"uint64_t result = ~ctx->gpr[{ra}] + ctx->gpr[{rb}] + ca; "
@@ -1851,8 +1894,11 @@ class PPULifter:
         lines.append("")
         return "\n".join(lines)
 
-    def emit_source(self) -> str:
-        """Generate the C source file content."""
+    def _preamble_lines(self) -> list[str]:
+        """Source preamble + static-inline helper functions, emitted into
+        every chunk file (the helpers are `static inline`, so duplicating
+        them across translation units is harmless and keeps each chunk
+        self-contained)."""
         lines = [SOURCE_PREAMBLE]
 
         # Emit helper macros
@@ -1911,60 +1957,113 @@ class PPULifter:
         lines.append("    return (ppc_rotl64(rs, sh) & mask) | (ra & ~mask);")
         lines.append("}")
         lines.append("")
+        return lines
 
-        # Build address-to-function map for fallthrough resolution
-        func_by_addr = {f.start_addr: f for f in self.functions}
-        sorted_addrs = sorted(func_by_addr.keys())
+    def _function_def_lines(self, func, func_by_addr, sorted_addrs,
+                            addr_index) -> list[str]:
+        """C lines for one lifted function (body + fallthrough trampoline)."""
+        lines: list[str] = []
+        label = self.name_map.get(func.start_addr)
+        if label:
+            lines.append(f"/* {label} */")
+        lines.append(f"void {func.name}(ppu_context* ctx) {{")
+        for bline in func.body_lines:
+            lines.append(f"    {bline}" if not bline.endswith(":") else bline)
 
-        for i, func in enumerate(self.functions):
-            label = self.name_map.get(func.start_addr)
-            if label:
-                lines.append(f"/* {label} */")
-            lines.append(f"void {func.name}(ppu_context* ctx) {{")
-            for bline in func.body_lines:
-                lines.append(f"    {bline}" if not bline.endswith(":") else bline)
+        # If a function doesn't end with blr/b/bctr (a return or unconditional
+        # branch), PPC execution falls through to the next address. The lifter
+        # may split one logical function into pieces at boundary points, so
+        # chain them via the trampoline to avoid deep host call stacks.
+        needs_fallthrough = True
+        if func.body_lines:
+            last_line = func.body_lines[-1].strip().rstrip(';')
+            if (last_line.startswith('return') or
+                'goto ' in last_line or
+                last_line.startswith('func_') or
+                last_line.startswith('lv2_syscall') or
+                '{ func_' in last_line):
+                needs_fallthrough = False
 
-            # Check if this function needs a fallthrough call to the next function.
-            # On PPC, if a function doesn't end with blr/b/bctr (a return or
-            # unconditional branch), execution falls through to the next address.
-            # The lifter may split one logical function into multiple pieces at
-            # function boundary points, so we need to chain them.
-            needs_fallthrough = True
-            if func.body_lines:
-                last_line = func.body_lines[-1].strip().rstrip(';')
-                if (last_line.startswith('return') or
-                    'goto ' in last_line or
-                    last_line.startswith('func_') or
-                    last_line.startswith('lv2_syscall') or
-                    '{ func_' in last_line):
-                    needs_fallthrough = False
+        if needs_fallthrough:
+            addr_idx = addr_index.get(func.start_addr)
+            if addr_idx is not None and addr_idx + 1 < len(sorted_addrs):
+                next_func = func_by_addr[sorted_addrs[addr_idx + 1]]
+                lines.append(f"        {{ g_trampoline_fn = (void(*)(void*)){next_func.name}; return; }}")
 
-            if needs_fallthrough:
-                # Find the next function by address.
-                # Use trampoline pattern to avoid deep call chains.
-                try:
-                    addr_idx = sorted_addrs.index(func.start_addr)
-                    if addr_idx + 1 < len(sorted_addrs):
-                        next_addr = sorted_addrs[addr_idx + 1]
-                        next_func = func_by_addr[next_addr]
-                        lines.append(f"        {{ g_trampoline_fn = (void(*)(void*)){next_func.name}; return; }}")
-                except ValueError:
-                    pass
+        lines.append("}")
+        lines.append("")
+        return lines
 
-            lines.append("}")
-            lines.append("")
-
-        # Function table
+    def _table_lines(self) -> list[str]:
+        """The exported function table (typedef + extern declaration live in
+        the header). Emitted once, into the final chunk file."""
+        lines: list[str] = []
         lines.append("/* Function table */")
-        lines.append("typedef struct { uint64_t addr; void (*func)(ppu_context*); const char* name; } func_entry;")
-        lines.append(f"static const func_entry function_table[] = {{")
+        lines.append("const func_entry function_table[] = {")
         for func in self.functions:
             lines.append(f'    {{ 0x{func.start_addr:08X}ULL, {func.name}, "{func.name}" }},')
         lines.append("    { 0, NULL, NULL }")
         lines.append("};")
+        lines.append(f"const uint64_t function_table_count = {len(self.functions)};")
         lines.append("")
+        return lines
 
+    def emit_source(self) -> str:
+        """Full single-file C source (kept for small binaries and tests; the
+        default build path uses write_source_files, which splits the output
+        to stay under the MSVC source-line limit)."""
+        func_by_addr = {f.start_addr: f for f in self.functions}
+        sorted_addrs = sorted(func_by_addr.keys())
+        addr_index = {a: i for i, a in enumerate(sorted_addrs)}
+        lines = self._preamble_lines()
+        for func in self.functions:
+            lines += self._function_def_lines(func, func_by_addr, sorted_addrs, addr_index)
+        lines += self._table_lines()
         return "\n".join(lines)
+
+    def write_source_files(self, out_dir: str, base: str = "ppu_recomp",
+                           ext: str = ".cpp", max_lines: int = 600_000) -> list[str]:
+        """Write the C source split across chunk files. MSVC refuses sources
+        past 16,777,215 lines (C4049/C1088), which a large game exceeds in a
+        single file; splitting also lets the build compile chunks in parallel
+        and rebuild incrementally. Chunks are cut only at function
+        boundaries. Returns the list of written paths."""
+        func_by_addr = {f.start_addr: f for f in self.functions}
+        sorted_addrs = sorted(func_by_addr.keys())
+        addr_index = {a: i for i, a in enumerate(sorted_addrs)}
+
+        preamble = self._preamble_lines()
+        written: list[str] = []
+        chunk_idx = 0
+
+        def flush(body_lines: list[str], trailer: list[str] | None = None) -> None:
+            nonlocal chunk_idx
+            path = os.path.join(out_dir, f"{base}_{chunk_idx:03d}{ext}")
+            with open(path, "w") as f:
+                f.write("\n".join(preamble + body_lines + (trailer or [])))
+            written.append(path)
+            print(f"  wrote {os.path.basename(path)} "
+                  f"({len(preamble) + len(body_lines) + len(trailer or [])} lines)",
+                  flush=True)
+            chunk_idx += 1
+
+        cur: list[str] = []
+        cur_len = len(preamble)
+        n = len(self.functions)
+        for i, func in enumerate(self.functions):
+            if i % 10000 == 0:
+                print(f"  ... emitting {i}/{n} functions", flush=True)
+            deflines = self._function_def_lines(func, func_by_addr, sorted_addrs, addr_index)
+            if cur and cur_len + len(deflines) > max_lines:
+                flush(cur)
+                cur = []
+                cur_len = len(preamble)
+            cur += deflines
+            cur_len += len(deflines)
+
+        # Final chunk carries the function table.
+        flush(cur, self._table_lines())
+        return written
 
 
 # ---------------------------------------------------------------------------
@@ -2059,6 +2158,72 @@ def discover_jump_tables(all_insns, read_u32, toc, text_lo, text_hi):
     return tables
 
 
+# ---------------------------------------------------------------------------
+# Parallel lifting
+#
+# Translation is per-function and self-contained (each function's window of
+# instructions fully determines its C body), so the main lift fans out to a
+# process pool. Workers re-disassemble just their own byte ranges from the
+# raw segment blobs, so the big instruction list never crosses the process
+# boundary. Discovery and emission stay serial in the parent.
+# ---------------------------------------------------------------------------
+
+_WORKER_STATE: dict = {}
+
+
+def _worker_init(segs, big_endian, name_map):
+    _WORKER_STATE["segs"] = segs
+    _WORKER_STATE["be"] = big_endian
+    _WORKER_STATE["names"] = name_map
+
+
+def _worker_lift(task):
+    idx0, bounds = task
+    lifter = PPULifter()
+    lifter.name_map = _WORKER_STATE["names"]
+    results = []
+    for start, end in bounds:
+        blob = b""
+        for va, d in _WORKER_STATE["segs"]:
+            if va <= start < va + len(d):
+                blob = d[start - va:min(end - va, len(d))]
+                break
+        insns = disassemble_bytes(blob, start, _WORKER_STATE["be"]) if blob else []
+        f = lifter.lift_function(insns, start, end)
+        results.append((f.name, f.start_addr, f.end_addr, f.body_lines, f.calls))
+    return idx0, results, lifter.call_targets, lifter.branch_targets
+
+
+def _parallel_lift(lifter, func_bounds, segs, big_endian, jobs):
+    import multiprocessing as mp
+
+    n = len(func_bounds)
+    chunk = max(50, n // (jobs * 8))
+    tasks = [(i, func_bounds[i:i + chunk]) for i in range(0, n, chunk)]
+    print(f"  parallel lift: {jobs} workers, {len(tasks)} chunks of ~{chunk}", flush=True)
+
+    results_by_idx = {}
+    done = 0
+    t0 = time.time()
+    with mp.Pool(processes=jobs, initializer=_worker_init,
+                 initargs=(segs, big_endian, lifter.name_map)) as pool:
+        for idx0, results, ct, bt in pool.imap_unordered(_worker_lift, tasks):
+            results_by_idx[idx0] = results
+            lifter.call_targets |= ct
+            lifter.branch_targets |= bt
+            done += len(results)
+            elapsed = time.time() - t0
+            eta = elapsed / done * (n - done) if done else 0
+            print(f"  ... lifted {done}/{n} functions ({100 * done // n}%) "
+                  f"elapsed {elapsed / 60:.1f}m eta {eta / 60:.1f}m", flush=True)
+
+    for idx0 in sorted(results_by_idx):
+        for name, s, e, body, calls in results_by_idx[idx0]:
+            lifter.functions.append(LiftedFunction(
+                name=name, start_addr=s, end_addr=e,
+                body_lines=body, calls=calls))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="PPU to C lifter for PS3 recompilation")
     parser.add_argument("input", help="Input ELF or raw binary")
@@ -2074,6 +2239,10 @@ def main() -> None:
     parser.add_argument("--names", metavar="FILE", default=None,
                         help="JSON name map from ghidra_names.py "
                              "({\"0xADDR\": {\"label\": ...}}); emitted as comments")
+    parser.add_argument("--jobs", "-j", type=int,
+                        default=max(1, os.cpu_count() or 1),
+                        help="Worker processes for the main lift "
+                             "(default: CPU count; 1 = serial)")
     args = parser.parse_args()
 
     with open(args.input, "rb") as f:
@@ -2082,9 +2251,11 @@ def main() -> None:
     big_endian = not args.little_endian
     base_addr = args.base
 
-    # Get instructions
+    # Get instructions (and keep the raw executable blobs for worker processes)
+    seg_blobs: list[tuple[int, bytes]] = []
     if args.raw:
         all_insns = disassemble_bytes(file_data, base_addr, big_endian)
+        seg_blobs = [(base_addr, file_data)]
     else:
         try:
             from elf_parser import ELFFile, PT_LOAD
@@ -2096,15 +2267,18 @@ def main() -> None:
                 if ph.p_type == PT_LOAD and (ph.p_flags & 1):
                     seg_data = elf.get_segment_data(elf.program_headers.index(ph))
                     all_insns.extend(disassemble_bytes(seg_data, ph.p_vaddr, big_endian))
+                    seg_blobs.append((ph.p_vaddr, seg_data))
             if not all_insns:
                 for ph in elf.program_headers:
                     if ph.p_type == PT_LOAD and ph.p_filesz > 0:
                         seg_data = elf.get_segment_data(elf.program_headers.index(ph))
                         all_insns.extend(disassemble_bytes(seg_data, ph.p_vaddr, big_endian))
+                        seg_blobs.append((ph.p_vaddr, seg_data))
                         break
         except Exception as exc:
             print(f"Warning: ELF parse failed ({exc}), treating as raw", file=sys.stderr)
             all_insns = disassemble_bytes(file_data, base_addr, big_endian)
+            seg_blobs = [(base_addr, file_data)]
 
     # Get function boundaries
     if args.functions:
@@ -2186,11 +2360,18 @@ def main() -> None:
                 loaded += 1
         print(f"  Loaded {loaded} recovered names from {args.names}")
 
-    _n_funcs = len(func_bounds)
-    for _i, (start, end) in enumerate(func_bounds):
-        lifter.lift_function(all_insns, start, end)
-        if _i % 1000 == 0 or _i == _n_funcs - 1:
-            print(f"  ... lifted {_i + 1}/{_n_funcs} functions", flush=True)
+    if args.jobs > 1:
+        _parallel_lift(lifter, func_bounds, seg_blobs, big_endian, args.jobs)
+    else:
+        _t0 = time.time()
+        _n_funcs = len(func_bounds)
+        for _i, (start, end) in enumerate(func_bounds):
+            lifter.lift_function(all_insns, start, end)
+            if (_i + 1) % 1000 == 0 or _i == _n_funcs - 1:
+                _el = time.time() - _t0
+                _eta = _el / (_i + 1) * (_n_funcs - _i - 1)
+                print(f"  ... lifted {_i + 1}/{_n_funcs} functions "
+                      f"elapsed {_el / 60:.1f}m eta {_eta / 60:.1f}m", flush=True)
 
     # Resolve mid-function entry points: generate tail-entry functions for
     # branch/trampoline targets that land inside existing function bodies.
@@ -2210,17 +2391,25 @@ def main() -> None:
     os.makedirs(args.output, exist_ok=True)
 
     header_path = os.path.join(args.output, args.header_name)
-    source_path = os.path.join(args.output, args.source_name)
-
     with open(header_path, "w") as f:
         f.write(lifter.emit_header())
 
-    print("Building C source (~263 MB in memory — this is the long silent phase)...", flush=True)
-    with open(source_path, "w") as f:
-        f.write(lifter.emit_source())
+    # Remove stale output (the old single-file source and any previous chunk
+    # set) so a build doesn't pick up both.
+    import glob as _glob
+    base = args.source_name[:-2] if args.source_name.endswith(".c") else args.source_name
+    for stale in ([os.path.join(args.output, args.source_name)] +
+                  _glob.glob(os.path.join(args.output, f"{base}_*.c")) +
+                  _glob.glob(os.path.join(args.output, f"{base}_*.cpp"))):
+        if os.path.exists(stale):
+            os.remove(stale)
+
+    print("Writing C source (split into chunks)...", flush=True)
+    paths = lifter.write_source_files(args.output, base=base)
 
     print(f"Wrote {header_path}")
-    print(f"Wrote {source_path}")
+    print(f"Wrote {len(paths)} source chunks: "
+          f"{os.path.basename(paths[0])} .. {os.path.basename(paths[-1])}")
     print(f"  {len(lifter.functions)} functions lifted")
     print(f"  {len(lifter.call_targets)} unique call targets")
 
