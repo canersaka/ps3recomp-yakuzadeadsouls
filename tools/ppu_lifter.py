@@ -1687,6 +1687,7 @@ class PPULifter:
         func_intervals = sorted((f.start_addr, f.end_addr) for f in self.functions)
 
         count = 0
+        gap_targets: list[int] = []
         for target in sorted(all_refs):
             # Binary search: find the function whose range contains target
             container = None
@@ -1706,6 +1707,12 @@ class PPULifter:
                     break
 
             if container is None:
+                # Gap-resident target: a branch / bctr / jump-table target that
+                # landed between lifted functions. If we skip it, the trampoline
+                # `g_trampoline_fn = func_X` references a func that is never
+                # emitted (referenced-but-undefined → C2065 at compile, dangling
+                # at link). Promote it to its own function below.
+                gap_targets.append(target)
                 continue
 
             fstart, fend = container
@@ -1715,6 +1722,24 @@ class PPULifter:
             # in output. Update defined set so we don't re-generate.
             defined.add(target)
             count += 1
+
+        # Lift gap-resident targets. Each is bounded by the next known boundary
+        # (existing function start OR the next gap target, whichever is closer)
+        # so adjacent gap entries partition the gap instead of swallowing each
+        # other — the same model discover_jump_tables uses for case targets.
+        if gap_targets:
+            import bisect
+            boundaries = sorted(
+                {f.start_addr for f in self.functions} | set(gap_targets))
+            text_hi = max((f.end_addr for f in self.functions), default=0)
+            for target in gap_targets:
+                idx = bisect.bisect_right(boundaries, target)
+                bound = boundaries[idx] if idx < len(boundaries) else text_hi
+                if bound <= target:
+                    continue
+                self.lift_function(all_insns, target, bound)
+                defined.add(target)
+                count += 1
 
         return count
 
@@ -1730,7 +1755,7 @@ class PPULifter:
             lines.append(f"void {func.name}(ppu_context* ctx);")
         # Also declare any call targets that aren't defined
         defined = {f.start_addr for f in self.functions}
-        for target in sorted(self.call_targets - defined):
+        for target in sorted((self.call_targets | self.branch_targets) - defined):
             lines.append(f"void func_{target:08X}(ppu_context* ctx); /* external */")
         lines.append("")
         return "\n".join(lines)
@@ -2078,7 +2103,7 @@ def main() -> None:
     # This runs iteratively because newly generated tail-entry functions may
     # themselves contain branches to other mid-function addresses.
     total_mid = 0
-    max_passes = 10
+    max_passes = 25
     for pass_num in range(1, max_passes + 1):
         n = lifter.generate_mid_function_entries(all_insns)
         if n == 0:
