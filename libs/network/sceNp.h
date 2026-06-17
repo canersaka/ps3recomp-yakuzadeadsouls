@@ -108,6 +108,24 @@ s32 sceNpGetAccountRegion(s32 userId, u32* region);
 s32 sceNpGetAccountAge(s32 userId, s32* age);
 s32 sceNpGetMyLanguages(SceNpMyLanguages* langs);
 
+/* --- NP Manager (sign-in state). We run permanently offline: GetStatus reports
+ * OFFLINE so games cleanly skip online flows instead of blocking on sign-in. --- */
+#define SCE_NP_MANAGER_STATUS_OFFLINE          (-1)
+#define SCE_NP_MANAGER_STATUS_GETTING_TICKET    0
+#define SCE_NP_MANAGER_STATUS_GETTING_PROFILE   1
+#define SCE_NP_MANAGER_STATUS_LOGGING_IN        2
+#define SCE_NP_MANAGER_STATUS_ONLINE            3
+
+typedef void (*SceNpManagerCallback)(s32 event, s32 result, void* arg);
+
+s32 sceNpManagerGetStatus(s32* status);
+s32 sceNpManagerRegisterCallback(SceNpManagerCallback callback, void* arg);
+s32 sceNpManagerUnregisterCallback(void);
+s32 sceNpManagerGetNpId(SceNpId* npId);
+s32 sceNpManagerGetOnlineId(SceNpOnlineId* onlineId);
+s32 sceNpManagerGetOnlineName(SceNpOnlineName* onlineName);
+s32 sceNpManagerGetAccountAge(s32* age);
+
 /* Set the fake PSN username (call before sceNpInit if desired) */
 void sceNpSetFakeUsername(const char* username);
 

@@ -186,3 +186,51 @@ s32 sceNpGetMyLanguages(SceNpMyLanguages* langs)
     printf("[sceNp] GetMyLanguages() -> English\n");
     return CELL_OK;
 }
+
+/* ---------------------------------------------------------------------------
+ * NP Manager (sign-in state)
+ *
+ * The toolkit runs with a fake local profile but no live PSN connection. So the
+ * manager reports OFFLINE — games gate their online flows on GetStatus and skip
+ * them cleanly — while the identity getters still hand back the fake account,
+ * matching how NP behaves on a real signed-in-but-disconnected console.
+ * Imported by most online-capable titles.
+ * -----------------------------------------------------------------------*/
+
+static SceNpManagerCallback s_npmgr_cb = NULL;
+static void*                s_npmgr_cb_arg = NULL;
+
+s32 sceNpManagerGetStatus(s32* status)
+{
+    if (!s_np_initialized)
+        return SCE_NP_ERROR_NOT_INITIALIZED;
+    if (!status)
+        return SCE_NP_ERROR_INVALID_ARGUMENT;
+    *status = SCE_NP_MANAGER_STATUS_OFFLINE;   /* -1, endian-safe */
+    printf("[sceNp] ManagerGetStatus() -> OFFLINE\n");
+    return CELL_OK;
+}
+
+s32 sceNpManagerRegisterCallback(SceNpManagerCallback callback, void* arg)
+{
+    if (!s_np_initialized)
+        return SCE_NP_ERROR_NOT_INITIALIZED;
+    /* Stored for bookkeeping; we never transition online so never fire it. */
+    s_npmgr_cb     = callback;
+    s_npmgr_cb_arg = arg;
+    printf("[sceNp] ManagerRegisterCallback()\n");
+    return CELL_OK;
+}
+
+s32 sceNpManagerUnregisterCallback(void)
+{
+    s_npmgr_cb     = NULL;
+    s_npmgr_cb_arg = NULL;
+    return CELL_OK;
+}
+
+/* Identity getters: reuse the fake-profile implementations (offline-with-account). */
+s32 sceNpManagerGetNpId(SceNpId* npId)               { return sceNpGetNpId(0, npId); }
+s32 sceNpManagerGetOnlineId(SceNpOnlineId* onlineId) { return sceNpGetOnlineId(0, onlineId); }
+s32 sceNpManagerGetOnlineName(SceNpOnlineName* name) { return sceNpGetOnlineName(0, name); }
+s32 sceNpManagerGetAccountAge(s32* age)              { return sceNpGetAccountAge(0, age); }
