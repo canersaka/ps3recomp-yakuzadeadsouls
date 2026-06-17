@@ -333,6 +333,11 @@ MIT License. See [LICENSE](LICENSE) for details.
 
 ---
 
+## Contributors
+
+ps3recomp is built by a growing community. See **[CONTRIBUTORS.md](CONTRIBUTORS.md)**
+for who did what — thank you, everyone.
+
 ## Changelog
 
 ### v0.6.1 — *"Many Hands"* (June 2026)
