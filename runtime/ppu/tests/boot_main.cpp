@@ -53,6 +53,7 @@ static void derive_vfs_root(const char* eboot)
 
 /* Host-provided symbols the runtime + HLE libs need. */
 extern "C" uint8_t* vm_base = nullptr;
+extern "C" uint32_t ppu_vm_size;   /* defined in ppu_loader.cpp (OOB guard) */
 /* g_ps3_guest_caller is defined (default NULL) by libs/system/cellSysutil.c in
  * the runtime library; the boot harness installs no guest callbacks, so we just
  * leave it at its default rather than re-defining it (would be a duplicate
@@ -70,7 +71,7 @@ int main(int argc, char** argv)
 
     vm_base = (uint8_t*)calloc(1, VM_SIZE);
     if (!vm_base) { printf("vm alloc failed\n"); return 1; }
-    extern "C" uint32_t ppu_vm_size; ppu_vm_size = VM_SIZE;   /* enable OOB guard */
+    ppu_vm_size = VM_SIZE;   /* enable OOB guard */
 
     uint32_t entry = ppu_load_elf(argv[1]);
     if (!entry) { printf("load failed\n"); return 1; }
