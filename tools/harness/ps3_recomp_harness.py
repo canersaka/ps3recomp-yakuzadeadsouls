@@ -55,6 +55,7 @@ TOOLS_DIR = Path(__file__).resolve().parent.parent          # the tools/ dir
 ELF_PARSER = TOOLS_DIR / "elf_parser.py"
 FIND_FUNCS = TOOLS_DIR / "find_functions.py"
 PPU_LIFTER = TOOLS_DIR / "ppu_lifter.py"
+PPU_LOADER = TOOLS_DIR / "ppu_loader.py"
 
 DEFAULTS = {
     "psn_root": r"Z:\Roms\PS3\PSN",
@@ -299,7 +300,64 @@ def stage_lift(elf: Path, ff_path: str, work: Path, cfg) -> dict:
     return r
 
 
-STAGE_TIER = {"decrypt": 2, "profile": 3, "functions": 4, "lift": 5}
+_NIDDB = None
+
+
+def _niddb():
+    """Lazily build a NID->name resolver from nid_database's builtins."""
+    global _NIDDB
+    if _NIDDB is None:
+        if str(TOOLS_DIR) not in sys.path:
+            sys.path.insert(0, str(TOOLS_DIR))
+        try:
+            from nid_database import NIDDatabase
+            db = NIDDatabase()
+            db.load_builtins()
+        except Exception:                          # resolver is optional
+            db = False
+        _NIDDB = db
+    return _NIDDB or None
+
+
+def stage_imports(elf: Path, work: Path, cfg) -> dict:
+    """Extract the EBOOT's firmware imports (proc_prx_param -> libstub table) via
+    ppu_loader, and resolve NIDs to names where known. Non-gating: a binary with
+    no import table (or a PRX) simply yields nothing and the pipeline continues.
+    """
+    r = {"status": "fail", "gating": False}
+    out_dir = work / "loader"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    rc, out, err, _ = run([sys.executable, PPU_LOADER, elf, "-o", out_dir], timeout=cfg.t_profile)
+    imp_json = out_dir / (elf.stem + ".imports.json")
+    if rc != 0 or not imp_json.exists():
+        r["error"] = f"ppu_loader rc={rc}: {err.strip()[-160:]}"
+        return r
+    try:
+        imps = json.loads(imp_json.read_text())
+    except json.JSONDecodeError:
+        r["error"] = "imports.json unreadable"
+        return r
+    db = _niddb()
+    resolved = []
+    for im in imps:
+        nidv = im.get("nid")
+        try:
+            nid = int(nidv, 16) if isinstance(nidv, str) else int(nidv)
+        except (TypeError, ValueError):
+            nid = None
+        name = None
+        if db is not None and nid is not None:
+            hit = db.lookup_nid(nid)
+            if hit:
+                name = hit[1]
+        resolved.append({"library": im.get("library"), "nid": nidv, "name": name})
+    libs = sorted({im["library"] for im in resolved if im.get("library")})
+    r.update(status="ok", n_imports=len(resolved), n_libraries=len(libs),
+             n_resolved=sum(1 for im in resolved if im["name"]), imports=resolved)
+    return r
+
+
+STAGE_TIER = {"decrypt": 2, "profile": 3, "imports": 4, "functions": 4, "lift": 5}
 
 
 def discover_binaries(roots):
@@ -363,6 +421,7 @@ def run_binary(binp: Path, cfg) -> dict:
     elf = Path(dec["elf"])
 
     order = [("profile", lambda: stage_profile(elf, cfg)),
+             ("imports", lambda: stage_imports(elf, work, cfg)),
              ("functions", lambda: stage_functions(elf, work, cfg))]
     if cfg.max_tier >= 5:
         order.append(("lift", lambda: stage_lift(
@@ -370,11 +429,13 @@ def run_binary(binp: Path, cfg) -> dict:
 
     for name, fn in order:
         if STAGE_TIER[name] > cfg.max_tier:
-            break
+            continue
         out = fn()
         res["stages"][name] = out
         if out.get("status") == "ok":
             res["max_tier_reached"] = max(res["max_tier_reached"], STAGE_TIER[name])
+        elif out.get("gating") is False:
+            continue                               # best-effort stage (imports)
         else:
             res["blocked_at"] = name
             break
@@ -473,7 +534,7 @@ def cmd_report(cfg):
             return sum(1 for r in elf_rows if r["stages"].get(stage, {}).get("status") == "ok")
         A("### Pipeline funnel\n")
         A("| Stage | Reached OK | % |\n|---|---:|---:|")
-        for s in ["decrypt", "profile", "functions", "lift"]:
+        for s in ["decrypt", "profile", "imports", "functions", "lift"]:
             attempted = sum(1 for r in elf_rows if s in r["stages"])
             if attempted:
                 A(f"| {s} | {ok(s)}/{attempted} | {round(100*ok(s)/n)}% |")
@@ -482,12 +543,13 @@ def cmd_report(cfg):
         base_dist = Counter()
         machines = Counter()
         A("### Per-binary profile\n")
-        A("| Binary | machine | image base | segs | mem (KB) | functions | .opd seeded | lift |\n"
+        A("| Binary | machine | image base | segs | functions | .opd seeded | imports (libs) | lift |\n"
           "|---|---|---|---:|---:|---:|---:|---|")
         for r in elf_rows:
             st = r["stages"]
             prof = st.get("profile", {})
             fn = st.get("functions", {})
+            imp = st.get("imports", {})
             lift = st.get("lift", {})
             if prof.get("image_base"):
                 base_dist[prof["image_base"]] += 1
@@ -496,10 +558,48 @@ def cmd_report(cfg):
             lift_cell = (f"{lift.get('n_chunks')} chunks/{lift.get('c_mb')}MB"
                          if lift.get("status") == "ok"
                          else (lift.get("error", "-")[:18] if lift else "-"))
+            imp_cell = (f"{imp.get('n_imports')} ({imp.get('n_libraries')})"
+                        if imp.get("status") == "ok" else "-")
             A(f"| {r['title'][:34]} | {prof.get('machine', '-')} | {prof.get('image_base', '-')} "
-              f"| {prof.get('n_segments', '-')} | {prof.get('mem_kb', '-')} "
-              f"| {fn.get('n_functions', '-')} | {fn.get('opd_seeded', '-')} | {lift_cell} |")
+              f"| {prof.get('n_segments', '-')} "
+              f"| {fn.get('n_functions', '-')} | {fn.get('opd_seeded', '-')} | {imp_cell} | {lift_cell} |")
         A("")
+
+        # ---- cross-title import ranking (stub-prioritization) ----
+        lib_titles = Counter()        # how many titles import each library
+        fn_titles = Counter()         # how many titles import each function
+        fn_label = {}                 # key -> human label
+        for r in elf_rows:
+            imp = r["stages"].get("imports", {})
+            if imp.get("status") != "ok":
+                continue
+            seen_lib, seen_fn = set(), set()
+            for im in imp.get("imports", []):
+                lib = im.get("library") or "?"
+                key = (lib, im.get("name") or im.get("nid"))
+                seen_lib.add(lib)
+                seen_fn.add(key)
+                fn_label[key] = (f"{lib}::{im['name']}" if im.get("name")
+                                 else f"{lib}::{im.get('nid')}")
+            for l in seen_lib:
+                lib_titles[l] += 1
+            for k in seen_fn:
+                fn_titles[k] += 1
+        if lib_titles:
+            A("### Top imported libraries (stub-prioritization)\n")
+            A("_How many of the analyzed titles import each firmware library — the "
+              "most common ones are the highest-value modules to support._\n")
+            A("| Library | # titles |\n|---|---:|")
+            for lib, c in lib_titles.most_common(30):
+                A(f"| `{lib}` | {c} |")
+            A("")
+            A("### Top imported functions (stub-prioritization)\n")
+            A("_Most-imported NIDs across titles (resolved to names where known). "
+              "These are the highest-value stubs to implement next._\n")
+            A("| Function (library::name/NID) | # titles |\n|---|---:|")
+            for k, c in fn_titles.most_common(40):
+                A(f"| `{fn_label[k]}` | {c} |")
+            A("")
         if base_dist:
             A("### Image-base distribution\n")
             for b, c in base_dist.most_common():
