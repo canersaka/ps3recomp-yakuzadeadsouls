@@ -23,6 +23,7 @@ front doors:
 | 3 | profile | seconds | `elf_parser.py` → machine, entry, **image base**, segments, memsz |
 | 4 | functions | seconds | `find_functions.py` → function count, `.opd`-seeded starts, verify |
 | 5 | lift | minutes–GBs | `ppu_lifter.py -j N` → generated C chunks, giant-function warnings (**opt-in**) |
+| 6 | crosscheck | ~1 min/binary | `ghidra_analyze.py` headless → compares `find_functions` to Ghidra's function set; reports **recall** (functions Ghidra finds that we miss) + `extra` (**opt-in**, needs Ghidra at `c:\tools\ghidra`) |
 
 Each title is isolated, timed and resumable; one title's failure never aborts the
 batch. Per-title results land in `<out>/results/*.json`; `report` aggregates them
@@ -39,6 +40,9 @@ python ps3_recomp_harness.py analyze --elf-root D:\recomp\ps3games --max-tier 4
 
 # Push a few all the way through the lifter (opt-in, slow, big output):
 python ps3_recomp_harness.py analyze --elf-root D:\recomp\ps3games\simpsons --max-tier 5
+
+# Cross-check our function detection against Ghidra (opt-in, needs Ghidra):
+python ps3_recomp_harness.py analyze --elf-root D:\recomp\ps3games\simpsons --max-tier 6
 
 # Re-aggregate the report from existing per-title results:
 python ps3_recomp_harness.py report

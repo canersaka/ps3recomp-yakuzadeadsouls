@@ -56,6 +56,7 @@ ELF_PARSER = TOOLS_DIR / "elf_parser.py"
 FIND_FUNCS = TOOLS_DIR / "find_functions.py"
 PPU_LIFTER = TOOLS_DIR / "ppu_lifter.py"
 PPU_LOADER = TOOLS_DIR / "ppu_loader.py"
+GHIDRA_ANALYZE = TOOLS_DIR / "ghidra_analyze.py"
 
 DEFAULTS = {
     "psn_root": r"Z:\Roms\PS3\PSN",
@@ -357,7 +358,56 @@ def stage_imports(elf: Path, work: Path, cfg) -> dict:
     return r
 
 
-STAGE_TIER = {"decrypt": 2, "profile": 3, "imports": 4, "functions": 4, "lift": 5}
+def stage_crosscheck(elf: Path, work: Path, cfg, ff_path) -> dict:
+    """Cross-check find_functions against an industrial disassembler (Ghidra
+    headless). Measures recall — how many functions Ghidra finds that we miss —
+    which is the quality signal for our boundary detection. Slow (minutes per
+    binary), so it lives at the top tier and is opt-in.
+    """
+    r = {"status": "fail"}
+    if not ff_path or not Path(ff_path).exists():
+        r["error"] = "no find_functions output (needs tier >= 4)"
+        return r
+    gout = work / "ghidra"
+    shutil.rmtree(gout, ignore_errors=True)
+    cmd = [sys.executable, GHIDRA_ANALYZE, elf, "-o", gout, "--max-cpu", str(cfg.ghidra_cpu)]
+    rc, out, err, dur = run(cmd, timeout=cfg.t_ghidra)
+    r["ghidra_s"] = round(dur, 1)
+    gfuncs = gout / "functions.json"
+    if rc != 0 or not gfuncs.exists():
+        r["error"] = f"ghidra rc={rc}: {(err or out).strip()[-160:]}"
+        shutil.rmtree(gout, ignore_errors=True)
+        return r
+
+    def norm(a):
+        return int(a, 16) if isinstance(a, str) else int(a)
+    try:
+        gj = json.loads(gfuncs.read_text())
+        fj = json.loads(Path(ff_path).read_text())
+    except (json.JSONDecodeError, OSError):
+        r["error"] = "unreadable function json"
+        return r
+
+    ours = {norm(f["start"]) for f in fj}
+    # Ghidra flags import thunks; exclude them from the recall denominator since
+    # they're stub trampolines, not real functions our lifter must cover.
+    theirs = {norm(g["addr"]) for g in gj if not g.get("thunk")}
+    agree = ours & theirs
+    missed = theirs - ours                     # Ghidra found, we didn't (recall gap)
+    extra = ours - theirs                       # we found, Ghidra didn't
+    r.update(status="ok",
+             n_ours=len(ours), n_ghidra=len(theirs), n_agree=len(agree),
+             n_missed=len(missed), n_extra=len(extra),
+             recall_pct=round(100 * len(agree) / max(1, len(theirs)), 1))
+    if missed:
+        r["missed_sample"] = [f"0x{a:08X}" for a in sorted(missed)[:12]]
+    if not cfg.keep_ghidra:
+        shutil.rmtree(gout, ignore_errors=True)
+    return r
+
+
+STAGE_TIER = {"decrypt": 2, "profile": 3, "imports": 4, "functions": 4,
+              "lift": 5, "crosscheck": 6}
 
 
 def discover_binaries(roots):
@@ -426,6 +476,9 @@ def run_binary(binp: Path, cfg) -> dict:
     if cfg.max_tier >= 5:
         order.append(("lift", lambda: stage_lift(
             elf, res["stages"].get("functions", {}).get("functions_path"), work, cfg)))
+    if cfg.max_tier >= 6:
+        order.append(("crosscheck", lambda: stage_crosscheck(
+            elf, work, cfg, res["stages"].get("functions", {}).get("functions_path"))))
 
     for name, fn in order:
         if STAGE_TIER[name] > cfg.max_tier:
@@ -534,7 +587,7 @@ def cmd_report(cfg):
             return sum(1 for r in elf_rows if r["stages"].get(stage, {}).get("status") == "ok")
         A("### Pipeline funnel\n")
         A("| Stage | Reached OK | % |\n|---|---:|---:|")
-        for s in ["decrypt", "profile", "imports", "functions", "lift"]:
+        for s in ["decrypt", "profile", "imports", "functions", "lift", "crosscheck"]:
             attempted = sum(1 for r in elf_rows if s in r["stages"])
             if attempted:
                 A(f"| {s} | {ok(s)}/{attempted} | {round(100*ok(s)/n)}% |")
@@ -612,6 +665,31 @@ def cmd_report(cfg):
                 A(f"- {m}: {c}")
             A("")
 
+        # ---- function-detection cross-check vs Ghidra ----
+        cc_rows = [(r["title"], r["stages"]["crosscheck"]) for r in elf_rows
+                   if r["stages"].get("crosscheck", {}).get("status") == "ok"]
+        if cc_rows:
+            tot_ghidra = sum(c["n_ghidra"] for _, c in cc_rows)
+            tot_agree = sum(c["n_agree"] for _, c in cc_rows)
+            A("### Function-detection cross-check (find_functions vs Ghidra)\n")
+            A("_Recall = how many of Ghidra's functions our detector also finds "
+              "(higher is better — a recall gap means address-taken/called functions "
+              "the lifter would miss). `extra` = starts we find that Ghidra doesn't "
+              "(real `.opd` functions Ghidra folded, or our false positives)._\n")
+            A(f"- **Corpus recall: {round(100*tot_agree/max(1,tot_ghidra),1)}%** "
+              f"({tot_agree}/{tot_ghidra} Ghidra functions also found)\n")
+            A("| Binary | find_functions | Ghidra | agree | missed | extra | recall | ghidra (s) |\n"
+              "|---|---:|---:|---:|---:|---:|---:|---:|")
+            for t, c in cc_rows:
+                A(f"| {t[:30]} | {c['n_ours']} | {c['n_ghidra']} | {c['n_agree']} "
+                  f"| {c['n_missed']} | {c['n_extra']} | {c.get('recall_pct', '-')}% "
+                  f"| {c.get('ghidra_s', '-')} |")
+            A("")
+            worst = min(cc_rows, key=lambda tc: tc[1].get("recall_pct", 100))
+            if worst[1].get("missed_sample"):
+                A(f"Sample functions missed on **{worst[0]}** (Ghidra found, we didn't): "
+                  + ", ".join(f"`{a}`" for a in worst[1]["missed_sample"]) + "\n")
+
         # giant functions + lift failures
         giants = [(r["title"], st["lift"]["giant_functions"])
                   for r in elf_rows if (st := r["stages"]).get("lift", {}).get("giant_functions")]
@@ -650,6 +728,11 @@ def build_cfg(args):
     c.t_profile = 120
     c.t_functions = 600
     c.t_lift = getattr(args, "t_lift", None) or 3600
+    c.t_ghidra = getattr(args, "t_ghidra", None) or 1800
+    if getattr(c, "ghidra_cpu", None) in (None, 0):
+        c.ghidra_cpu = 4
+    if not hasattr(c, "keep_ghidra"):
+        c.keep_ghidra = False
     return c
 
 
@@ -667,13 +750,19 @@ def main():
     pa = sub.add_parser("analyze", help="profile/lift decrypted ELFs under --elf-root")
     pa.add_argument("--elf-root", dest="elf_root", action="append",
                     help="directory of decrypted PS3 binaries (repeatable)")
-    pa.add_argument("--max-tier", dest="max_tier", type=int, default=4, choices=[2, 3, 4, 5],
-                    help="2 decrypt, 3 +profile, 4 +functions (default), 5 +lift")
+    pa.add_argument("--max-tier", dest="max_tier", type=int, default=4, choices=[2, 3, 4, 5, 6],
+                    help="2 decrypt, 3 +profile, 4 +functions (default), 5 +lift, "
+                         "6 +crosscheck (Ghidra recall, opt-in)")
     pa.add_argument("--limit", type=int)
     pa.add_argument("--force", action="store_true")
     pa.add_argument("--jobs", type=int, default=0, help="ppu_lifter --jobs (0 = its default)")
     pa.add_argument("--keep-lifted", dest="keep_lifted", action="store_true")
+    pa.add_argument("--keep-ghidra", dest="keep_ghidra", action="store_true",
+                    help="keep the Ghidra export dirs (tier 6)")
+    pa.add_argument("--ghidra-cpu", dest="ghidra_cpu", type=int, default=4,
+                    help="analyzeHeadless -max-cpu (tier 6)")
     pa.add_argument("--t-lift", dest="t_lift", type=int)
+    pa.add_argument("--t-ghidra", dest="t_ghidra", type=int)
     pa.add_argument("--out")
     pa.add_argument("--ps3sce")
 
@@ -684,7 +773,8 @@ def main():
     # default-fill fields a given subparser may not define
     for f, d in [("psn_root", None), ("probe", 0), ("elf_root", None), ("max_tier", 4),
                  ("limit", None), ("force", False), ("jobs", 0), ("keep_lifted", False),
-                 ("t_lift", None), ("sevenzip", None), ("ps3sce", None)]:
+                 ("t_lift", None), ("sevenzip", None), ("ps3sce", None),
+                 ("keep_ghidra", False), ("ghidra_cpu", 4), ("t_ghidra", None)]:
         if not hasattr(args, f):
             setattr(args, f, d)
     if getattr(args, "jobs", 0) in (0, None):
