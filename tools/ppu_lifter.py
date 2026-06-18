@@ -2234,6 +2234,9 @@ def main() -> None:
     parser.add_argument("--output", "-o", default=".", help="Output directory")
     parser.add_argument("--header-name", default="ppu_recomp.h", help="Header file name")
     parser.add_argument("--source-name", default="ppu_recomp.c", help="Source file name")
+    parser.add_argument("--single-file", action="store_true",
+                        help="Emit one ppu_recomp.c instead of split chunks (for "
+                             "single-file post-processing, e.g. flOw's vmx_splice)")
     parser.add_argument("--raw", action="store_true", help="Treat input as raw binary")
     parser.add_argument("--base", type=lambda x: int(x, 0), default=0,
                         help="Base address (for raw binary)")
@@ -2408,12 +2411,22 @@ def main() -> None:
         if os.path.exists(stale):
             os.remove(stale)
 
-    print("Writing C source (split into chunks)...", flush=True)
-    paths = lifter.write_source_files(args.output, base=base)
-
-    print(f"Wrote {header_path}")
-    print(f"Wrote {len(paths)} source chunks: "
-          f"{os.path.basename(paths[0])} .. {os.path.basename(paths[-1])}")
+    if args.single_file:
+        # One ppu_recomp.c (the old layout). Slower to compile for huge images,
+        # but some workflows post-process a single file (e.g. flOw's vmx_splice).
+        src_path = os.path.join(args.output, args.source_name)
+        print(f"Writing single-file C source -> {os.path.basename(src_path)} ...", flush=True)
+        with open(src_path, "w") as f:
+            f.write(lifter.emit_source())
+        paths = [src_path]
+        print(f"Wrote {header_path}")
+        print(f"Wrote {os.path.basename(src_path)}")
+    else:
+        print("Writing C source (split into chunks)...", flush=True)
+        paths = lifter.write_source_files(args.output, base=base)
+        print(f"Wrote {header_path}")
+        print(f"Wrote {len(paths)} source chunks: "
+              f"{os.path.basename(paths[0])} .. {os.path.basename(paths[-1])}")
     print(f"  {len(lifter.functions)} functions lifted")
     print(f"  {len(lifter.call_targets)} unique call targets")
 
