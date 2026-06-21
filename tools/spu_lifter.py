@@ -331,6 +331,10 @@ class SPULifter:
             "fi": "spu_fi",   # floating interpolate (reciprocal refine)
             "fceq": "spu_fceq", "fcgt": "spu_fcgt",
             "fcmeq": "spu_fcmeq", "fcmgt": "spu_fcmgt",
+            # double-precision (2 doubles/reg) + double compares
+            "dfa": "spu_dfa", "dfs": "spu_dfs", "dfm": "spu_dfm",
+            "dfceq": "spu_dfceq", "dfcmeq": "spu_dfcmeq",
+            "mpyhhu": "spu_mpyhhu",
             "cg": "spu_cg", "bg": "spu_bg",
             "avgb": "spu_avgb",
             # double precision
@@ -360,6 +364,7 @@ class SPULifter:
             "gb": "spu_gb", "gbh": "spu_gbh", "gbb": "spu_gbb",
             "fesd": "spu_fesd", "frds": "spu_frds",
             "frsqest": "spu_frsqest", "frest": "spu_frest",
+            "fesd": "spu_fesd", "frds": "spu_frds",   # single<->double convert
             # Phase 3
             "xsbh": "spu_xsbh", "xshw": "spu_xshw", "xswd": "spu_xswd",
             "orx": "spu_orx",
@@ -431,6 +436,12 @@ class SPULifter:
         # sfx: extended subtract — RT is also a source (carry-in = low bit of old RT).
         if mn == "sfx":
             return f"{g(rt())} = spu_sfx({g(ra())}, {g(rb())}, {g(rt())});"
+        # cgx: extended carry-generate — RT is also a source (carry-in = low bit).
+        if mn == "cgx":
+            return f"{g(rt())} = spu_cgx({g(ra())}, {g(rb())}, {g(rt())});"
+        # double FMA (dfma/dfms/dfnms/dfnma): 3-register, RT is the accumulator (c).
+        if mn in ("dfma", "dfms", "dfnms", "dfnma"):
+            return f"{g(rt())} = spu_{mn}({g(ra())}, {g(rb())}, {g(rt())});"
 
         # ---- quadword loads / stores ----
         if mn == "lqd":
@@ -493,6 +504,10 @@ class SPULifter:
                 return "return;"
             return (f"ctx->pc = {g(tgt_reg)}._u32[0]; "
                     f"spu_indirect_branch(ctx); return;")
+        # iret: interrupt return -> branch to the saved interrupt PC (SRR0).
+        if mn == "iret":
+            return ("ctx->pc = ctx->srr0; "
+                    "spu_indirect_branch(ctx); return;")
         if mn in ("bisl",):
             link_rt = insn.raw & 0x7F            # link reg dropped from operands
             tgt_reg = _reg(ops[0])
