@@ -40,11 +40,36 @@ static uint32_t g_tls_vaddr = 0, g_tls_filesz = 0, g_tls_memsz = 0;
 #define PPU_TLS_IMG   0x10F00000u
 #define PPU_TLS_TP    (PPU_TLS_IMG + 0x7000u)
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
 static int vm_oob(uint32_t a, uint32_t n)
 {
     if (ppu_vm_size && (uint64_t)a + n > ppu_vm_size) {
         static int logged = 0;
-        if (logged < 40) { fprintf(stderr, "[vm] OOB access 0x%08X (+%u)\n", a, n); logged++; }
+        if (logged < 40) {
+            fprintf(stderr, "[vm] OOB access 0x%08X (+%u)\n", a, n);
+#ifdef _WIN32
+            /* one-shot backtrace on the first OOB so the lifted caller is known */
+            static int bt = 0;
+            if (bt++ < 3) {
+                void* fr[20]; USHORT m = RtlCaptureStackBackTrace(0, 20, fr, NULL);
+                HMODULE self = NULL;
+                GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                   GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                   (LPCSTR)&vm_oob, &self);
+                for (USHORT i = 0; i < m; i++) {
+                    HMODULE mm = NULL;
+                    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                       GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)fr[i], &mm);
+                    if (mm == self)
+                        fprintf(stderr, "[vm-oob]   #%-2u rva=0x%llX\n", i,
+                                (unsigned long long)((char*)fr[i] - (char*)self));
+                }
+            }
+#endif
+            logged++;
+        }
         return 1;
     }
     return 0;
