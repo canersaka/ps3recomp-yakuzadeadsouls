@@ -33,20 +33,22 @@ uint64_t spu_workload_fingerprint(const void* data, size_t n)
 typedef struct {
     uint64_t            fp;
     spu_lifted_entry_fn fn;
+    int                 image_id;
     const char*         name;
 } spu_workload_entry;
 
 static spu_workload_entry s_registry[SPU_WORKLOAD_MAX];
 static unsigned           s_registry_count = 0;
 
-void spu_workload_register(uint64_t fingerprint, spu_lifted_entry_fn fn,
-                           const char* name)
+void spu_workload_register_img(uint64_t fingerprint, spu_lifted_entry_fn fn,
+                               int image_id, const char* name)
 {
     if (!fn) return;
     for (unsigned i = 0; i < s_registry_count; i++) {
         if (s_registry[i].fp == fingerprint) {     /* idempotent on fingerprint */
-            s_registry[i].fn   = fn;
-            s_registry[i].name = name;
+            s_registry[i].fn       = fn;
+            s_registry[i].image_id = image_id;
+            s_registry[i].name     = name;
             return;
         }
     }
@@ -55,10 +57,17 @@ void spu_workload_register(uint64_t fingerprint, spu_lifted_entry_fn fn,
                 SPU_WORKLOAD_MAX, name ? name : "?");
         return;
     }
-    s_registry[s_registry_count].fp   = fingerprint;
-    s_registry[s_registry_count].fn   = fn;
-    s_registry[s_registry_count].name = name;
+    s_registry[s_registry_count].fp       = fingerprint;
+    s_registry[s_registry_count].fn       = fn;
+    s_registry[s_registry_count].image_id = image_id;
+    s_registry[s_registry_count].name     = name;
     s_registry_count++;
+}
+
+void spu_workload_register(uint64_t fingerprint, spu_lifted_entry_fn fn,
+                           const char* name)
+{
+    spu_workload_register_img(fingerprint, fn, 0, name);
 }
 
 spu_lifted_entry_fn spu_workload_find(uint64_t fingerprint)
@@ -168,7 +177,10 @@ int spu_workload_dispatch(const uint8_t* image, uint32_t image_size,
     if (!image || image_size == 0) return 0;
 
     uint64_t fp = spu_workload_fingerprint(image, image_size);
-    spu_lifted_entry_fn fn = spu_workload_find(fp);
+    spu_lifted_entry_fn fn = NULL;
+    int image_id = 0;
+    for (unsigned i = 0; i < s_registry_count; i++)
+        if (s_registry[i].fp == fp) { fn = s_registry[i].fn; image_id = s_registry[i].image_id; break; }
     if (!fn) {
         fprintf(stderr,
             "[spu_workload] dispatch MISS fp=0x%016llX size=%u "
@@ -192,10 +204,10 @@ int spu_workload_dispatch(const uint8_t* image, uint32_t image_size,
     }
 
     fprintf(stderr,
-        "[spu_workload] dispatch HIT fp=0x%016llX entry=0x%05X args=0x%08X -> running\n",
-        (unsigned long long)fp, entry, args_ea);
+        "[spu_workload] dispatch HIT fp=0x%016llX entry=0x%05X args=0x%08X image=%d -> running\n",
+        (unsigned long long)fp, entry, args_ea, image_id);
 
-    spu_run_lifted_job(fn, ls, args_ea);
+    spu_run_lifted_job_img(fn, ls, args_ea, image_id);
 
     free(ls);
     return 1;

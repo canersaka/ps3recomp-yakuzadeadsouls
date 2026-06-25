@@ -304,6 +304,42 @@ static inline u128 spu_bgx(u128 a, u128 b, u128 t) {
     return r;
 }
 
+/* bg: borrow generate (non-extended) = bgx with carry-in fixed to 1.
+ * rt.u32[i] = 1 if (rb >= ra) i.e. no borrow in (rb - ra), else 0. */
+static inline u128 spu_bg(u128 a, u128 b) {
+    u128 r;
+    for(int i=0;i<4;i++) {
+        uint64_t s = (uint64_t)b._u32[i] + (uint64_t)(~a._u32[i]) + 1u;
+        r._u32[i] = (uint32_t)(s >> 32);
+    }
+    return r;
+}
+
+/* avgb: average bytes, rounded up. rt.u8[i] = (ra.u8[i] + rb.u8[i] + 1) >> 1. */
+static inline u128 spu_avgb(u128 a, u128 b) {
+    u128 r;
+    for(int i=0;i<16;i++) r._u8[i] = (uint8_t)(((unsigned)a._u8[i] + (unsigned)b._u8[i] + 1u) >> 1);
+    return r;
+}
+
+/* gbb: gather LSB of each of 16 bytes into the low 16 bits of the preferred
+ * word (byte 0's bit -> bit 15), mirroring spu_gbh. */
+static inline u128 spu_gbb(u128 a) {
+    uint32_t v=0; for(int i=0;i<16;i++) v |= ((uint32_t)(a._u8[i]&1) << (15-i));
+    u128 r = spu_zero(); r._u32[0]=v; return r;
+}
+
+/* ---- double-precision (2 doubles per register, slots 0 and 1) ---- */
+static inline u128 spu_dfa(u128 a, u128 b) { u128 r; r._f64[0]=a._f64[0]+b._f64[0]; r._f64[1]=a._f64[1]+b._f64[1]; return r; }
+static inline u128 spu_dfs(u128 a, u128 b) { u128 r; r._f64[0]=a._f64[0]-b._f64[0]; r._f64[1]=a._f64[1]-b._f64[1]; return r; }
+static inline u128 spu_dfm(u128 a, u128 b) { u128 r; r._f64[0]=a._f64[0]*b._f64[0]; r._f64[1]=a._f64[1]*b._f64[1]; return r; }
+/* fesd: extend single->double, from even word slots (0,2) into doubles (0,1). */
+static inline u128 spu_fesd(u128 a) { u128 r; r._f64[0]=(double)a._f32[0]; r._f64[1]=(double)a._f32[2]; return r; }
+/* frds: round double->single, into even word slots (0,2); odd slots cleared. */
+static inline u128 spu_frds(u128 a) { u128 r=spu_zero(); r._f32[0]=(float)a._f64[0]; r._f32[2]=(float)a._f64[1]; return r; }
+/* fscrwr: FP status/control register write — no architectural state modeled. */
+static inline u128 spu_fscrwr(u128 a) { (void)a; return spu_zero(); }
+
 /* ---- Phase 3: mfspr stub ---- */
 static inline u128 spu_mfspr(u128 a) { (void)a; return spu_zero(); }
 

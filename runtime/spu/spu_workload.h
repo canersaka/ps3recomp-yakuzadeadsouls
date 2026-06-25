@@ -45,6 +45,13 @@ uint64_t spu_workload_fingerprint(const void* data, size_t n);
 void spu_workload_register(uint64_t fingerprint, spu_lifted_entry_fn fn,
                            const char* name);
 
+/* As spu_workload_register, but binds the image's indirect-branch table id
+ * (the value passed to spu_begin_image() before this image's recomp_register).
+ * dispatch sets the run context's image_id to this so spu_indirect_branch
+ * resolves within the correct image when several share LS addresses. */
+void spu_workload_register_img(uint64_t fingerprint, spu_lifted_entry_fn fn,
+                               int image_id, const char* name);
+
 /* Look up a lifted entry by fingerprint; NULL if none registered. */
 spu_lifted_entry_fn spu_workload_find(uint64_t fingerprint);
 

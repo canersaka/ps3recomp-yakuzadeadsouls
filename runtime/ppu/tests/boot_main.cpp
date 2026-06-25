@@ -35,6 +35,7 @@ extern const char* ppu_vfs_root;   /* host dir that PS3 mount points map into */
 
 #include <string.h>
 #include <stdlib.h>
+#include <signal.h>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -76,6 +77,33 @@ static LONG WINAPI ydkj_crash_filter(EXCEPTION_POINTERS* ep)
     }
     fflush(stderr);
     return EXCEPTION_EXECUTE_HANDLER;
+}
+#endif
+
+#ifdef _WIN32
+/* abort()/exit(3) reporter: the recompiled CRT (or a failed invariant) can call
+ * abort() — Windows turns that into exit code 3 with no message. Capture a host
+ * backtrace (RVAs) + the last HLE NID so the aborting caller can be symbolized. */
+static void ydkj_abort_handler(int)
+{
+    fprintf(stderr, "\n[ABORT] SIGABRT raised; last HLE NID 0x%08X (%s)\n",
+            g_last_hle_nid, g_last_hle_name ? g_last_hle_name : "");
+    void* frames[32];
+    USHORT n = RtlCaptureStackBackTrace(0, 32, frames, NULL);
+    HMODULE self = NULL;
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                       GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       (LPCSTR)&ydkj_abort_handler, &self);
+    for (USHORT i = 0; i < n; i++) {
+        HMODULE m = NULL;
+        GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                           GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)frames[i], &m);
+        if (m == self)
+            fprintf(stderr, "[ABORT]   #%-2u rva=0x%llX\n", i,
+                    (unsigned long long)((char*)frames[i] - (char*)m));
+    }
+    fflush(stderr);
+    _exit(3);
 }
 #endif
 
@@ -156,6 +184,7 @@ int main(int argc, char** argv)
 
 #ifdef _WIN32
     SetUnhandledExceptionFilter(ydkj_crash_filter);
+    signal(SIGABRT, ydkj_abort_handler);
     setvbuf(stdout, NULL, _IONBF, 0);   /* unbuffered: don't lose prints on kill */
 #endif
 

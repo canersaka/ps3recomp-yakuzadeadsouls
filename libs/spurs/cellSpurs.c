@@ -460,10 +460,13 @@ s32 cellSpursCreateTask(CellSpursTaskset* taskset, CellSpursTaskId* taskId,
              * waits on concurrent PPU-side signals will want the async lv2
              * SPU-thread path instead — wired when a title exercises it. */
             if (elf) {
-                size_t sz = spu_elf_image_size((const uint8_t*)elf,
-                                               2u * 1024 * 1024);
+                /* elf/context are guest effective addresses; translate the image
+                 * pointer to host memory for fingerprint+load, but keep context
+                 * as the guest EA (the SPU job's DMA uses guest EAs / r3). */
+                const uint8_t* host_elf = GUEST_PTR(elf, const uint8_t*);
+                size_t sz = spu_elf_image_size(host_elf, 2u * 1024 * 1024);
                 if (sz)
-                    spu_workload_dispatch((const uint8_t*)elf, (uint32_t)sz,
+                    spu_workload_dispatch(host_elf, (uint32_t)sz,
                                           (uint32_t)(uintptr_t)context);
             }
             return CELL_OK;

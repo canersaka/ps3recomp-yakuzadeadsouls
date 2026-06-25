@@ -267,6 +267,8 @@ class SPULifter:
             return "/* nop */;"
         if mn in ("sync", "dsync"):
             return "/* sync */;"
+        if mn == "fscrwr":
+            return "/* fscrwr: FP status/control write (no-op in recomp) */;"
         if mn == "stop":
             return "ctx->status = SPU_STATUS_STOPPED_BY_STOP; return;"
 
@@ -311,7 +313,10 @@ class SPULifter:
             "fi": "spu_fi",   # floating interpolate (reciprocal refine)
             "fceq": "spu_fceq", "fcgt": "spu_fcgt",
             "fcmeq": "spu_fcmeq", "fcmgt": "spu_fcmgt",
-            "cg": "spu_cg",
+            "cg": "spu_cg", "bg": "spu_bg",
+            "avgb": "spu_avgb",
+            # double precision
+            "dfa": "spu_dfa", "dfs": "spu_dfs", "dfm": "spu_dfm",
             # Phase 2: register-variable shifts/rotates
             "shl": "spu_shl", "shlh": "spu_shlh",
             "rot": "spu_rot", "roth": "spu_roth",
@@ -334,7 +339,8 @@ class SPULifter:
         rr_un = {
             "clz": "spu_clz", "cntb": "spu_cntb",
             "fscrrd": "spu_fscrrd",
-            "gb": "spu_gb", "gbh": "spu_gbh",
+            "gb": "spu_gb", "gbh": "spu_gbh", "gbb": "spu_gbb",
+            "fesd": "spu_fesd", "frds": "spu_frds",
             "frsqest": "spu_frsqest", "frest": "spu_frest",
             # Phase 3
             "xsbh": "spu_xsbh", "xshw": "spu_xshw", "xswd": "spu_xswd",

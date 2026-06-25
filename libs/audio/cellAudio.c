@@ -549,12 +549,10 @@ s32 cellAudioQuit(void)
     audio_stop_mix_thread();
     audio_backend_shutdown();
 
-    /* Free all port buffers */
+    /* Port buffers live in the guest vm_base arena (bump-allocated, not host
+     * malloc) -- just drop the references; never free() them. */
     for (int i = 0; i < CELL_AUDIO_PORT_MAX; i++) {
-        if (s_ports[i].buffer) {
-            free(s_ports[i].buffer);
-            s_ports[i].buffer = NULL;
-        }
+        s_ports[i].buffer = NULL;
         s_ports[i].in_use = 0;
         s_ports[i].running = 0;
     }
@@ -656,10 +654,10 @@ s32 cellAudioPortClose(u32 portNum)
         return CELL_AUDIO_ERROR_PORT_NOT_OPEN;
     }
 
-    if (s_ports[portNum].buffer) {
-        free(s_ports[portNum].buffer);
-        s_ports[portNum].buffer = NULL;
-    }
+    /* buffer points INTO the guest vm_base arena (bump-allocated in PortOpen),
+     * not a host malloc -- do NOT free() it (that corrupts the host heap).
+     * The guest window is reclaimed wholesale when vm_base is released. */
+    s_ports[portNum].buffer = NULL;
 
     s_ports[portNum].in_use  = 0;
     s_ports[portNum].running = 0;

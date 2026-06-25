@@ -23,18 +23,27 @@ typedef void (*spu_lifted_entry_fn)(spu_context*);
  * (the SPURS task ABI), the lifted entry runs, and the LS is written back.
  * The caller links the channel ABI (spu_wrch/spu_rdch/...) that the lifted code
  * uses to reach DMA / mailboxes / events. Returns the job's exit code (0). */
-static inline int32_t spu_run_lifted_job(spu_lifted_entry_fn entry,
-                                         uint8_t* local_store,
-                                         uint32_t args_ea)
+static inline int32_t spu_run_lifted_job_img(spu_lifted_entry_fn entry,
+                                             uint8_t* local_store,
+                                             uint32_t args_ea,
+                                             int image_id)
 {
     if (!entry) return -1;
     spu_context ctx;
     spu_context_init(&ctx, 0);
+    ctx.image_id = image_id;     /* select this image's indirect-branch table */
     if (local_store) memcpy(ctx.ls, local_store, SPU_LS_SIZE);  /* job's LS in */
     ctx.gpr[3]._u32[0] = args_ea;                               /* SPURS task arg -> r3 */
     entry(&ctx);                                                /* run the lifted job  */
     if (local_store) memcpy(local_store, ctx.ls, SPU_LS_SIZE);  /* LS back out */
     return 0;
+}
+
+static inline int32_t spu_run_lifted_job(spu_lifted_entry_fn entry,
+                                         uint8_t* local_store,
+                                         uint32_t args_ea)
+{
+    return spu_run_lifted_job_img(entry, local_store, args_ea, 0);
 }
 
 /* lv2 PPU-fallback wrapper: signature matches spu_ppu_fallback_fn so it can be
