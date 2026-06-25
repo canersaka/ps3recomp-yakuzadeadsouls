@@ -36,6 +36,33 @@ extern const char* ppu_vfs_root;   /* host dir that PS3 mount points map into */
 #include <string.h>
 #include <stdlib.h>
 
+#ifdef _WIN32
+#include <windows.h>
+/* Last-chance crash reporter: vm_base accesses are bounds-guarded, so a real
+ * access violation means a HOST pointer deref (e.g. a bad function pointer or a
+ * runtime-struct walk). Print the faulting address and the RIP as a module
+ * offset (RVA) so it can be symbolized with llvm-symbolizer against the PDB. */
+static LONG WINAPI ydkj_crash_filter(EXCEPTION_POINTERS* ep)
+{
+    EXCEPTION_RECORD* er = ep->ExceptionRecord;
+    fprintf(stderr, "\n[CRASH] code=0x%08lX rip=%p\n",
+            (unsigned long)er->ExceptionCode, er->ExceptionAddress);
+    if (er->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && er->NumberParameters >= 2)
+        fprintf(stderr, "[CRASH] %s fault address 0x%llX\n",
+                er->ExceptionInformation[0] ? "write" : "read",
+                (unsigned long long)er->ExceptionInformation[1]);
+    HMODULE mod = NULL;
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                       GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       (LPCSTR)er->ExceptionAddress, &mod);
+    fprintf(stderr, "[CRASH] module=%p rva=0x%llX  (llvm-symbolizer --obj=ydkj_boot.exe 0x%llX)\n",
+            (void*)mod, (unsigned long long)((char*)er->ExceptionAddress - (char*)mod),
+            (unsigned long long)((char*)er->ExceptionAddress - (char*)mod));
+    fflush(stderr);
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+#endif
+
 /* Derive the VFS root (the dir containing PS3_GAME) from the EBOOT path
  * <root>/PS3_GAME/USRDIR/EBOOT.elf  -> <root>. $PS3_VFS_ROOT overrides. */
 static char s_vfs_root[1024];
@@ -60,15 +87,23 @@ extern "C" void lv2_init_syscalls(void);   /* runtime/syscalls/lv2_register.c */
  * leave it at its default rather than re-defining it (would be a duplicate
  * symbol at link). */
 
-/* The game's allocator maps its heap at 0x20000000+ (user memory) and touches
- * regions as high as ~0x50000000. The flat VM treats every address as valid RAM,
- * so size it to cover the full range the boot uses. ~1.36 GB. */
-#define VM_SIZE    0x51000000u
-#define STACK_TOP  0x0FF00000u   /* free region below the 0x10000000 segment */
+/* The flat VM treats every address as valid RAM, so it must span every region
+ * the PS3 memory map uses. The game's heap maps at 0x20000000+ and reaches
+ * ~0x50000000, but sys_ppu_thread_create allocates thread stacks in the PS3
+ * stack region at 0xD0000000-0xDFFFFFFF (vm.h: VM_STACK_BASE). Without covering
+ * that, every spawned thread's stack access is OOB (reads 0 / writes dropped)
+ * and the thread crashes. Size to include the stack region: ~3.75 GB, lazily
+ * committed by the OS (only touched pages are backed). */
+#define VM_SIZE    0xE0000000u
+#define STACK_TOP  0x0FF00000u   /* main-thread stack, below the 0x10000000 segment */
 
 int main(int argc, char** argv)
 {
     if (argc < 2) { printf("usage: %s <EBOOT.elf>\n", argv[0]); return 2; }
+
+#ifdef _WIN32
+    SetUnhandledExceptionFilter(ydkj_crash_filter);
+#endif
 
     vm_base = (uint8_t*)calloc(1, VM_SIZE);
     if (!vm_base) { printf("vm alloc failed\n"); return 1; }

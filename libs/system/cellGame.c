@@ -5,9 +5,11 @@
  */
 
 #include "cellGame.h"
+#include "../../runtime/ppu/ppu_memory.h"   /* vm_base, vm_write32 (guest mem) */
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <sys/stat.h>
 
 #ifdef _WIN32
@@ -119,21 +121,29 @@ s32 cellGameBootCheck(u32* type, u32* attributes, CellGameContentSize* size,
     for (char* p = s_tmp_path; *p; p++) if (*p == '/') *p = '\\';
 #endif
 
-    if (type)
-        *type = s_game_type;
+    /* The HLE bridge passes the GUEST addresses of these out-params (the PPC
+     * r3-r6 values), not host pointers. Translate through vm_base and write
+     * big-endian via vm_write32 -- dereferencing them directly would fault on
+     * the guest stack address (e.g. 0x0FEFFB60). */
+    uint32_t type_ea = (uint32_t)(uintptr_t)type;
+    uint32_t attr_ea = (uint32_t)(uintptr_t)attributes;
+    uint32_t size_ea = (uint32_t)(uintptr_t)size;
+    uint32_t dir_ea  = (uint32_t)(uintptr_t)dirName;
 
-    if (attributes)
-        *attributes = 0;
+    if (type_ea) vm_write32(type_ea, (uint32_t)s_game_type);
+    if (attr_ea) vm_write32(attr_ea, 0);
 
-    if (size) {
-        size->hddFreeSizeKB = 1024 * 1024; /* 1GB free */
-        size->sizeKB = CELL_GAME_SIZEKB_NOTCALC;
-        size->sysSizeKB = 0;
+    if (size_ea) {
+        vm_write32(size_ea + 0, 1024 * 1024);                 /* hddFreeSizeKB = 1 GB */
+        vm_write32(size_ea + 4, (uint32_t)CELL_GAME_SIZEKB_NOTCALC);
+        vm_write32(size_ea + 8, 0);                           /* sysSizeKB */
     }
 
-    if (dirName) {
-        strncpy(dirName, s_title_id, CELL_GAME_PATH_MAX - 1);
-        dirName[CELL_GAME_PATH_MAX - 1] = '\0';
+    if (dir_ea) {
+        size_t len = strlen(s_title_id);
+        if (len > CELL_GAME_PATH_MAX - 1) len = CELL_GAME_PATH_MAX - 1;
+        memcpy(vm_base + dir_ea, s_title_id, len);
+        vm_base[dir_ea + len] = '\0';
     }
 
     s_boot_checked = 1;

@@ -208,9 +208,13 @@ int64_t sys_ppu_thread_create(ppu_context* ctx)
             t->name, (unsigned long long)entry, (unsigned long long)arg,
             stack_size, priority);
 
-    /* Create the host thread */
+    /* Create the host thread. Give it a large RESERVED stack: each recompiled
+     * guest call is a real host call, so deep guest call chains nest deeply on
+     * the host stack and overflow the 1 MB default. Reserve 256 MB (committed
+     * lazily by the OS via STACK_SIZE_PARAM_IS_A_RESERVATION). */
 #ifdef _WIN32
-    t->host_thread = CreateThread(NULL, 0, ppu_host_thread_proc, t, 0, &t->host_tid);
+    t->host_thread = CreateThread(NULL, 256u * 1024 * 1024, ppu_host_thread_proc, t,
+                                  STACK_SIZE_PARAM_IS_A_RESERVATION, &t->host_tid);
     if (t->host_thread == NULL) {
         t->state = PPU_THREAD_STATE_FREE;
         CloseHandle(t->finish_event);
