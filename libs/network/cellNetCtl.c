@@ -7,8 +7,14 @@
 
 #include "cellNetCtl.h"
 #include "cellSysutil.h"   /* cellSysutilQueueEvent, CELL_SYSUTIL_MAX_CALLBACKS */
+#include "../../runtime/ppu/ppu_memory.h"   /* vm_base, vm_write32 (guest mem) */
 #include <stdio.h>
 #include <string.h>
+#include <stdint.h>
+
+/* The generic HLE adapter passes GUEST addresses for pointer args; translate to
+ * a host pointer (struct out-params) or write scalars big-endian via vm_write32. */
+#define GUEST_PTR(p, T) ((T)((p) ? (void*)(vm_base + (uint32_t)(uintptr_t)(p)) : (void*)0))
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -136,8 +142,8 @@ s32 cellNetCtlGetState(s32* state)
     if (!state)
         return CELL_NET_CTL_ERROR_INVALID_ADDR;
 
-    /* Report that we have a full IP connection */
-    *state = CELL_NET_CTL_STATE_IPObtained;
+    /* Report that we have a full IP connection (guest out-param) */
+    vm_write32((uint32_t)(uintptr_t)state, CELL_NET_CTL_STATE_IPObtained);
 
     printf("[cellNetCtl] GetState() -> IPObtained\n");
     return CELL_OK;
@@ -151,6 +157,7 @@ s32 cellNetCtlGetInfo(s32 code, CellNetCtlInfo* info)
     if (!info)
         return CELL_NET_CTL_ERROR_INVALID_ADDR;
 
+    info = GUEST_PTR(info, CellNetCtlInfo*);
     memset(info, 0, sizeof(CellNetCtlInfo));
 
     switch (code)
@@ -232,6 +239,7 @@ s32 cellNetCtlGetNatInfo(CellNetCtlNatInfo* natInfo)
     if (!natInfo)
         return CELL_NET_CTL_ERROR_INVALID_ADDR;
 
+    natInfo = GUEST_PTR(natInfo, CellNetCtlNatInfo*);
     natInfo->size        = sizeof(CellNetCtlNatInfo);
     natInfo->nat_type    = CELL_NET_CTL_NATINFO_NAT_TYPE_2; /* moderate */
     natInfo->stun_status = 0;
@@ -254,7 +262,7 @@ s32 cellNetCtlAddHandler(cellNetCtlHandler handler, void* arg, s32* hid)
             s_handlers[i].in_use  = 1;
             s_handlers[i].handler = handler;
             s_handlers[i].arg     = arg;
-            *hid = i;
+            vm_write32((uint32_t)(uintptr_t)hid, (uint32_t)i);   /* guest out-param */
             printf("[cellNetCtl] AddHandler(hid=%d)\n", i);
             return CELL_OK;
         }
@@ -319,8 +327,10 @@ s32 cellNetCtlNetStartDialogAbortAsync(void)
 
 s32 cellNetCtlNetStartDialogUnloadAsync(CellNetCtlNetStartDialogResult* result)
 {
-    if (result)
+    if (result) {
+        result = GUEST_PTR(result, CellNetCtlNetStartDialogResult*);
         result->result = 0;   /* 0 = connected; endian-safe */
+    }
     printf("[cellNetCtl] NetStartDialogUnloadAsync() -> result=0 (connected)\n");
     netstart_broadcast(CELL_SYSUTIL_NET_CTL_NETSTART_UNLOADED);
     return CELL_OK;

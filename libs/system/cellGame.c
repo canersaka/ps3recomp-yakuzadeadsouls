@@ -159,15 +159,18 @@ s32 cellGameContentPermit(char* contentInfoPath, char* usrdirPath)
     ensure_dirs(s_content_info_path);
     ensure_dirs(s_usrdir_path);
 
-    if (contentInfoPath) {
-        /* Return PS3-style path */
-        snprintf(contentInfoPath, CELL_GAME_PATH_MAX,
-                 "/dev_hdd0/game/%s", s_title_id);
+    /* Both paths are GUEST addresses; format into a host temp, copy into the
+     * guest buffer through vm_base (a raw snprintf to the guest addr faults). */
+    char tmp[CELL_GAME_PATH_MAX];
+    uint32_t cip_ea = (uint32_t)(uintptr_t)contentInfoPath;
+    uint32_t usr_ea = (uint32_t)(uintptr_t)usrdirPath;
+    if (cip_ea) {
+        int n = snprintf(tmp, sizeof tmp, "/dev_hdd0/game/%s", s_title_id);
+        memcpy(vm_base + cip_ea, tmp, (size_t)n + 1);
     }
-
-    if (usrdirPath) {
-        snprintf(usrdirPath, CELL_GAME_PATH_MAX,
-                 "/dev_hdd0/game/%s/USRDIR", s_title_id);
+    if (usr_ea) {
+        int n = snprintf(tmp, sizeof tmp, "/dev_hdd0/game/%s/USRDIR", s_title_id);
+        memcpy(vm_base + usr_ea, tmp, (size_t)n + 1);
     }
 
     return CELL_OK;
@@ -178,14 +181,16 @@ s32 cellGameDataCheck(u32 type, const char* dirName, CellGameContentSize* size)
     printf("[cellGame] DataCheck(type=%u, dir='%s')\n",
            type, dirName ? dirName : "<null>");
 
-    const char* check_dir = dirName ? dirName : s_title_id;
+    uint32_t dir_ea = (uint32_t)(uintptr_t)dirName;   /* guest addr */
+    const char* check_dir = dir_ea ? (const char*)(vm_base + dir_ea) : s_title_id;
     char path[CELL_GAME_PATH_MAX];
     snprintf(path, sizeof(path), "%s/%s", s_content_path, check_dir);
 
-    if (size) {
-        size->hddFreeSizeKB = 1024 * 1024;
-        size->sizeKB = CELL_GAME_SIZEKB_NOTCALC;
-        size->sysSizeKB = 0;
+    uint32_t size_ea = (uint32_t)(uintptr_t)size;
+    if (size_ea) {
+        vm_write32(size_ea + 0, 1024 * 1024);
+        vm_write32(size_ea + 4, (uint32_t)CELL_GAME_SIZEKB_NOTCALC);
+        vm_write32(size_ea + 8, 0);
     }
 
     if (dir_exists(path)) {
@@ -199,27 +204,27 @@ s32 cellGameGetParamInt(s32 id, s32* value)
 {
     printf("[cellGame] GetParamInt(id=%d)\n", id);
 
-    if (!value)
+    /* `value` is a GUEST address; write big-endian via vm_write32. */
+    uint32_t value_ea = (uint32_t)(uintptr_t)value;
+    if (!value_ea)
         return CELL_GAME_ERROR_PARAM;
 
+    uint32_t v = 0;
     switch (id) {
-    case CELL_GAME_PARAMID_PARENTAL_LEVEL:
-        *value = 0;
-        break;
-    case CELL_GAME_PARAMID_RESOLUTION:
-        *value = 0;
-        break;
-    case CELL_GAME_PARAMID_SOUND_FORMAT:
-        *value = 0;
-        break;
     case CELL_GAME_PARAMID_APP_VER:
-        *value = 100; /* 1.00 as integer */
+        v = 100; /* 1.00 as integer */
+        break;
+    case CELL_GAME_PARAMID_PARENTAL_LEVEL:
+    case CELL_GAME_PARAMID_RESOLUTION:
+    case CELL_GAME_PARAMID_SOUND_FORMAT:
+        v = 0;
         break;
     default:
         printf("[cellGame] WARNING: unknown param int id %d\n", id);
-        *value = 0;
+        v = 0;
         break;
     }
+    vm_write32(value_ea, v);
 
     return CELL_OK;
 }
@@ -228,30 +233,27 @@ s32 cellGameGetParamString(s32 id, char* buf, u32 bufsize)
 {
     printf("[cellGame] GetParamString(id=%d, bufsize=%u)\n", id, bufsize);
 
-    if (!buf || bufsize == 0)
+    /* `buf` is a GUEST address (raw r4); translate through vm_base. Strings are
+     * byte data, so no byte-swap -- just write into the guest buffer. A raw
+     * strncpy(buf, ...) faulted on the guest stack address. */
+    uint32_t buf_ea = (uint32_t)(uintptr_t)buf;
+    if (!buf_ea || bufsize == 0)
         return CELL_GAME_ERROR_PARAM;
+    char* hbuf = (char*)(vm_base + buf_ea);
 
+    const char* src = "";
     switch (id) {
     case CELL_GAME_PARAMID_TITLE:
-    case CELL_GAME_PARAMID_TITLE_DEFAULT:
-        strncpy(buf, s_title, bufsize - 1);
-        buf[bufsize - 1] = '\0';
-        break;
-    case CELL_GAME_PARAMID_TITLE_ID:
-        strncpy(buf, s_title_id, bufsize - 1);
-        buf[bufsize - 1] = '\0';
-        break;
+    case CELL_GAME_PARAMID_TITLE_DEFAULT:  src = s_title;    break;
+    case CELL_GAME_PARAMID_TITLE_ID:       src = s_title_id; break;
     case CELL_GAME_PARAMID_APP_VER_STR:
-    case CELL_GAME_PARAMID_VERSION:
-        strncpy(buf, s_app_ver, bufsize - 1);
-        buf[bufsize - 1] = '\0';
-        break;
+    case CELL_GAME_PARAMID_VERSION:        src = s_app_ver;  break;
     default:
         printf("[cellGame] WARNING: unknown param string id %d\n", id);
-        buf[0] = '\0';
         break;
     }
-
+    strncpy(hbuf, src, bufsize - 1);
+    hbuf[bufsize - 1] = '\0';
     return CELL_OK;
 }
 
@@ -269,15 +271,18 @@ s32 cellGameCreateGameData(CellGameContentSize* size, char* dirName)
     snprintf(usrdir, sizeof(usrdir), "%s/USRDIR", path);
     ensure_dirs(usrdir);
 
-    if (dirName) {
-        strncpy(dirName, s_title_id, CELL_GAME_PATH_MAX - 1);
-        dirName[CELL_GAME_PATH_MAX - 1] = '\0';
+    uint32_t dir_ea = (uint32_t)(uintptr_t)dirName;   /* guest addrs */
+    uint32_t size_ea = (uint32_t)(uintptr_t)size;
+    if (dir_ea) {
+        size_t len = strlen(s_title_id);
+        if (len > CELL_GAME_PATH_MAX - 1) len = CELL_GAME_PATH_MAX - 1;
+        memcpy(vm_base + dir_ea, s_title_id, len);
+        vm_base[dir_ea + len] = '\0';
     }
-
-    if (size) {
-        size->hddFreeSizeKB = 1024 * 1024;
-        size->sizeKB = 0;
-        size->sysSizeKB = 0;
+    if (size_ea) {
+        vm_write32(size_ea + 0, 1024 * 1024);
+        vm_write32(size_ea + 4, 0);
+        vm_write32(size_ea + 8, 0);
     }
 
     return CELL_OK;
@@ -303,12 +308,12 @@ s32 cellGameGetSizeKB(s32* sizeKB)
 {
     printf("[cellGame] GetSizeKB()\n");
 
-    if (!sizeKB)
+    uint32_t sizeKB_ea = (uint32_t)(uintptr_t)sizeKB;
+    if (!sizeKB_ea)
         return CELL_GAME_ERROR_PARAM;
 
-    /* Report the content directory's size.
-       For now, estimate or return 0. */
-    *sizeKB = 0;
+    /* Report the content directory's size (guest addr; 0 for now). */
+    vm_write32(sizeKB_ea, 0);
     return CELL_OK;
 }
 

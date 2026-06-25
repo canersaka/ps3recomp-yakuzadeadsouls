@@ -42,11 +42,16 @@ extern const char* ppu_vfs_root;   /* host dir that PS3 mount points map into */
  * access violation means a HOST pointer deref (e.g. a bad function pointer or a
  * runtime-struct walk). Print the faulting address and the RIP as a module
  * offset (RVA) so it can be symbolized with llvm-symbolizer against the PDB. */
+extern "C" uint32_t    g_last_hle_nid;    /* ppu_hle.cpp breadcrumb */
+extern "C" const char* g_last_hle_name;
+
 static LONG WINAPI ydkj_crash_filter(EXCEPTION_POINTERS* ep)
 {
     EXCEPTION_RECORD* er = ep->ExceptionRecord;
     fprintf(stderr, "\n[CRASH] code=0x%08lX rip=%p\n",
             (unsigned long)er->ExceptionCode, er->ExceptionAddress);
+    fprintf(stderr, "[CRASH] last HLE NID 0x%08X (%s)\n",
+            g_last_hle_nid, g_last_hle_name ? g_last_hle_name : "");
     if (er->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && er->NumberParameters >= 2)
         fprintf(stderr, "[CRASH] %s fault address 0x%llX\n",
                 er->ExceptionInformation[0] ? "write" : "read",

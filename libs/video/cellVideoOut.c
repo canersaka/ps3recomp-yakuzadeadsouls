@@ -7,8 +7,14 @@
 
 #include "cellVideoOut.h"
 #include "ps3emu/endian.h"
+#include "../../runtime/ppu/ppu_memory.h"   /* vm_base (guest mem) */
 #include <stdio.h>
 #include <string.h>
+#include <stdint.h>
+
+/* The generic HLE adapter passes GUEST addresses for pointer args; translate to
+ * a host pointer. (Values written through it stay big-endian via ps3_bswap*.) */
+#define GUEST_PTR(p, T) ((T)((p) ? (void*)(vm_base + (uint32_t)(uintptr_t)(p)) : (void*)0))
 
 /* ---------------------------------------------------------------------------
  * Internal state
@@ -79,6 +85,7 @@ s32 cellVideoOutGetState(u32 videoOut, u32 deviceIndex, CellVideoOutState* state
     if (videoOut != CELL_VIDEO_OUT_PRIMARY && videoOut != CELL_VIDEO_OUT_SECONDARY)
         return CELL_VIDEO_OUT_ERROR_UNSUPPORTED_VIDEO_OUT;
 
+    state = GUEST_PTR(state, CellVideoOutState*);
     memset(state, 0, sizeof(CellVideoOutState));
 
     if (videoOut == CELL_VIDEO_OUT_PRIMARY) {
@@ -121,6 +128,7 @@ s32 cellVideoOutGetResolution(u32 resolutionId, CellVideoOutResolution* resoluti
      * setup.) */
     u16 w, h;
     get_resolution_wh(resolutionId, &w, &h);
+    resolution = GUEST_PTR(resolution, CellVideoOutResolution*);
     resolution->width  = ps3_bswap16(w);
     resolution->height = ps3_bswap16(h);
 
@@ -140,6 +148,7 @@ s32 cellVideoOutConfigure(u32 videoOut, CellVideoOutConfiguration* config,
     if (videoOut != CELL_VIDEO_OUT_PRIMARY)
         return CELL_VIDEO_OUT_ERROR_UNSUPPORTED_VIDEO_OUT;
 
+    config = GUEST_PTR(config, CellVideoOutConfiguration*);
     s_resolution_id = config->resolutionId;
     s_color_format  = config->format;
     s_aspect        = config->aspect;
@@ -170,6 +179,7 @@ s32 cellVideoOutGetConfiguration(u32 videoOut, CellVideoOutConfiguration* config
     if (videoOut != CELL_VIDEO_OUT_PRIMARY)
         return CELL_VIDEO_OUT_ERROR_UNSUPPORTED_VIDEO_OUT;
 
+    config = GUEST_PTR(config, CellVideoOutConfiguration*);
     memset(config, 0, sizeof(CellVideoOutConfiguration));
     config->resolutionId = s_resolution_id;
     config->format       = s_color_format;
@@ -191,6 +201,7 @@ s32 cellVideoOutGetDeviceInfo(u32 videoOut, u32 deviceIndex,
     if (videoOut != CELL_VIDEO_OUT_PRIMARY)
         return CELL_VIDEO_OUT_ERROR_UNSUPPORTED_VIDEO_OUT;
 
+    info = GUEST_PTR(info, CellVideoOutDeviceInfo*);
     memset(info, 0, sizeof(CellVideoOutDeviceInfo));
 
     info->portType       = CELL_VIDEO_OUT_OUTPUT_HDMI;

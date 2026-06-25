@@ -322,10 +322,19 @@ u32 cellGcmSetupContext(u32 ctx_out_addr, u32 cmdSize, u32 ioSize, u32 ioAddress
 
 s32 cellGcmGetConfiguration(CellGcmConfig* config)
 {
-    if (!config)
+    /* `config` is a GUEST address; write the 6 u32 fields big-endian via
+     * vm_write32 (a raw *config = s_config faults / is host-endian). The game
+     * reads localAddress/localSize from here to lay out VRAM framebuffers. */
+    uint32_t cfg = (uint32_t)(uintptr_t)config;
+    if (!cfg)
         return CELL_GCM_ERROR_INVALID_VALUE;
 
-    *config = s_config;
+    vm_write32(cfg +  0, s_config.localAddress);
+    vm_write32(cfg +  4, s_config.ioAddress);
+    vm_write32(cfg +  8, s_config.localSize);
+    vm_write32(cfg + 12, s_config.ioSize);
+    vm_write32(cfg + 16, s_config.memoryFrequency);
+    vm_write32(cfg + 20, s_config.coreFrequency);
     return CELL_OK;
 }
 
@@ -554,13 +563,15 @@ s32 cellGcmGetOffsetTable(CellGcmOffsetTable* table)
 /* NID: 0xDB769B32 */
 s32 cellGcmAddressToOffset(u32 address, u32* offset)
 {
-    if (!offset)
+    /* `offset` is a GUEST address; write big-endian via vm_write32. */
+    uint32_t off_ea = (uint32_t)(uintptr_t)offset;
+    if (!off_ea)
         return CELL_GCM_ERROR_INVALID_VALUE;
 
     /* Local memory: offset = address - localBase */
     if (address >= s_config.localAddress &&
         address < s_config.localAddress + s_config.localSize) {
-        *offset = address - s_config.localAddress;
+        vm_write32(off_ea, address - s_config.localAddress);
         return CELL_OK;
     }
 
@@ -568,19 +579,19 @@ s32 cellGcmAddressToOffset(u32 address, u32* offset)
     u32 page = address >> 20;
     if (page < 65536 && s_io_address_table[page] != 0xFFFF) {
         u32 io_page = s_io_address_table[page];
-        *offset = (io_page << 20) | (address & 0xFFFFF);
+        vm_write32(off_ea, (io_page << 20) | (address & 0xFFFFF));
         return CELL_OK;
     }
 
     /* Legacy fallback for initial IO region */
     if (s_config.ioAddress != 0 && address >= s_config.ioAddress &&
         address < s_config.ioAddress + s_config.ioSize) {
-        *offset = address - s_config.ioAddress;
+        vm_write32(off_ea, address - s_config.ioAddress);
         return CELL_OK;
     }
 
     printf("[cellGcmSys] WARNING: AddressToOffset failed for 0x%08X\n", address);
-    *offset = 0;
+    vm_write32(off_ea, 0);
     return CELL_GCM_ERROR_FAILURE;
 }
 
@@ -618,7 +629,7 @@ s32 cellGcmMapMainMemory(u32 ea, u32 size, u32* offset)
 
     populate_offset_table(ea, io_offset, size);
 
-    *offset = io_offset;
+    vm_write32((uint32_t)(uintptr_t)offset, io_offset);   /* guest out-param */
     return CELL_OK;
 }
 
@@ -688,18 +699,19 @@ s32 cellGcmUnmapIoAddress(u32 io)
 /* NID: 0xC47D0812 */
 s32 cellGcmIoOffsetToAddress(u32 ioOffset, u32* ea)
 {
-    if (!ea)
+    uint32_t ea_ea = (uint32_t)(uintptr_t)ea;   /* guest out-param */
+    if (!ea_ea)
         return CELL_GCM_ERROR_INVALID_VALUE;
 
     u32 page = ioOffset >> 20;
     if (page < 65536 && s_ea_address_table[page] != 0xFFFF) {
         u32 ea_page = s_ea_address_table[page];
-        *ea = (ea_page << 20) | (ioOffset & 0xFFFFF);
+        vm_write32(ea_ea, (ea_page << 20) | (ioOffset & 0xFFFFF));
         return CELL_OK;
     }
 
     printf("[cellGcmSys] WARNING: IoOffsetToAddress failed for 0x%08X\n", ioOffset);
-    *ea = 0;
+    vm_write32(ea_ea, 0);
     return CELL_GCM_ERROR_FAILURE;
 }
 

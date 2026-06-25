@@ -57,8 +57,14 @@ typedef uint64_t (*hle_generic)(uint64_t, uint64_t, uint64_t, uint64_t,
 /* Host VM store (defined in ppu_loader.cpp) — used for the TOC save below. */
 void vm_write64(uint64_t addr, uint64_t val);
 
+/* Breadcrumb for the crash reporter: the last firmware import dispatched, so a
+ * host AV inside an HLE handler names the culprit NID/function. */
+extern "C" uint32_t    g_last_hle_nid  = 0;
+extern "C" const char* g_last_hle_name = "";
+
 extern "C" void ps3_hle_call(uint32_t nid, ppu_context* ctx)
 {
+    g_last_hle_nid = nid;
     /* PPC64 ELFv1 cross-module ABI: the caller restores its TOC right after the
      * call with `ld r2, 0x28(r1)`, expecting the import stub to have saved the
      * caller's r2 into that slot. The real .lib.stub trampoline did this; the
@@ -77,6 +83,7 @@ extern "C" void ps3_hle_call(uint32_t nid, ppu_context* ctx)
         ctx->gpr[3] = 0;   /* CELL_OK-ish so the game keeps going */
         return;
     }
+    g_last_hle_name = e->name;
     hle_generic fn = (hle_generic)e->handler;
     uint64_t r = fn(ctx->gpr[3], ctx->gpr[4], ctx->gpr[5], ctx->gpr[6],
                     ctx->gpr[7], ctx->gpr[8], ctx->gpr[9], ctx->gpr[10]);

@@ -13,9 +13,11 @@
  */
 
 #include "cellAudio.h"
+#include "../../runtime/ppu/ppu_memory.h"   /* vm_base, vm_read64, vm_write32 */
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <math.h>
 
 /* ---------------------------------------------------------------------------
@@ -561,19 +563,21 @@ s32 cellAudioQuit(void)
 
 s32 cellAudioPortOpen(const CellAudioPortParam* param, u32* portNum)
 {
-    printf("[cellAudio] PortOpen(nChannel=%llu, nBlock=%llu)\n",
-           param ? (unsigned long long)param->nChannel : 0ULL,
-           param ? (unsigned long long)param->nBlock : 0ULL);
-
     if (!s_audio_initialized)
         return CELL_AUDIO_ERROR_NOT_INIT;
 
-    if (!param || !portNum)
+    /* param / portNum are GUEST addresses; translate, and read the BE u64 param
+     * fields via vm_read64 (a raw param->nChannel faults / is host-endian). */
+    uint32_t param_ea   = (uint32_t)(uintptr_t)param;
+    uint32_t portNum_ea = (uint32_t)(uintptr_t)portNum;
+    if (!param_ea || !portNum_ea)
         return CELL_AUDIO_ERROR_PARAM;
 
-    /* Validate parameters */
-    u64 nch = param->nChannel;
-    u64 nblk = param->nBlock;
+    u64 nch  = vm_read64(param_ea + 0);   /* nChannel */
+    u64 nblk = vm_read64(param_ea + 8);   /* nBlock   */
+    printf("[cellAudio] PortOpen(nChannel=%llu, nBlock=%llu)\n",
+           (unsigned long long)nch, (unsigned long long)nblk);
+
     if (nch != CELL_AUDIO_PORT_2CH && nch != CELL_AUDIO_PORT_8CH)
         return CELL_AUDIO_ERROR_PARAM;
     if (nblk != CELL_AUDIO_BLOCK_8 && nblk != CELL_AUDIO_BLOCK_16 && nblk != CELL_AUDIO_BLOCK_32)
@@ -598,7 +602,7 @@ s32 cellAudioPortOpen(const CellAudioPortParam* param, u32* portNum)
     AudioPortSlot* port = &s_ports[found];
     port->in_use  = 1;
     port->running = 0;
-    port->param   = *param;
+    memcpy(&port->param, vm_base + param_ea, sizeof(port->param));  /* guest struct */
     port->read_index  = 0;
     port->write_index = 0;
 
@@ -618,7 +622,7 @@ s32 cellAudioPortOpen(const CellAudioPortParam* param, u32* portNum)
     port->port_addr    = (u64)(uintptr_t)port->buffer;
     port->read_idx_addr = (u64)(uintptr_t)&port->read_index;
 
-    *portNum = (u32)found;
+    vm_write32(portNum_ea, (u32)found);   /* guest out-param */
 
     mutex_unlock(&s_audio_mutex);
     return CELL_OK;
