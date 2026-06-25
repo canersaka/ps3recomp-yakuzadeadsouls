@@ -832,11 +832,19 @@ class PPULifter:
             cond = self._branch_condition(mn, ops)
             return f"if ({cond}) return;"
 
-        # Conditional indirect call/return through CTR: b<cond>ctr [cr]
-        # Used by vtable dispatch with a predicate.
-        if (mn.endswith("ctr") and mn not in ("bctr", "bctrl") and
-                mn.startswith("b")):
+        # Indirect call/jump through CTR in any conditional or named form:
+        #   b<cond>ctr / bcctr  (no link) -> tail jump: dispatch, then return
+        #   b<cond>ctrl / bcctrl (link)   -> call: dispatch, then CONTINUE
+        # The exact unconditional bctr/bctrl are handled separately below. This
+        # MUST also catch the "ctrl" (link) forms -- otherwise bcctrl falls
+        # through to the generic conditional-branch handler, which parses the
+        # BO/BI operand as a branch target and trampolines to a garbage address
+        # (func_00000030). On a real title this is thousands of vtable calls.
+        if (mn.startswith("b") and mn not in ("bctr", "bctrl")
+                and (mn.endswith("ctr") or mn.endswith("ctrl"))):
             cond = self._branch_condition(mn, ops)
+            if mn.endswith("ctrl"):   # link = call: keep executing after it
+                return f"if ({cond}) {{ ps3_indirect_call(ctx); DRAIN_TRAMPOLINE(ctx); }}"
             return f"if ({cond}) {{ ps3_indirect_call(ctx); DRAIN_TRAMPOLINE(ctx); return; }}"
 
         # Conditional branches
