@@ -105,8 +105,49 @@ int main(int argc, char** argv)
     SetUnhandledExceptionFilter(ydkj_crash_filter);
 #endif
 
+    /* Native VA mapping: reserve the guest address space at its OWN host
+     * addresses, so guest address == host address and vm_base = 0. This removes
+     * ALL guest<->host pointer translation -- lifted code (vm_base + a) and HLE
+     * C code (raw *guest_ptr) reach the same bytes -- killing the whole class of
+     * "HLE deref'd a guest pointer as a host pointer" crashes. Guest memory
+     * stays big-endian, so vm_read/write still byte-swap; HLE functions that
+     * write multi-byte values through a raw pointer are now address-correct but
+     * host-endian (fix per-function with vm_write* as they matter). */
+#ifdef _WIN32
+    /* Reserve the specific regions the PS3 memory map uses, at their own host
+     * VAs (one giant low reservation conflicts with the process's existing low
+     * allocations). Commit lazily on first access via a vectored handler. */
+    struct { uintptr_t base; size_t size; const char* what; } regions[] = {
+        { 0x00010000, 0x1FFF0000, "image+TLS+main stack+mmapper (0x10000..0x20000000)" },
+        { 0x20000000, 0x40000000, "RSX-map + user heap (0x20000000..0x60000000)" },
+        { 0xD0000000, 0x10000000, "thread stacks (0xD0000000..0xE0000000)" },
+    };
+    for (size_t i = 0; i < sizeof(regions)/sizeof(regions[0]); i++) {
+        void* got = VirtualAlloc((void*)regions[i].base, regions[i].size,
+                                 MEM_RESERVE, PAGE_READWRITE);
+        if (got != (void*)regions[i].base) {
+            fprintf(stderr, "[boot] native VA reserve failed for %s: got %p (err %lu)\n",
+                    regions[i].what, got, (unsigned long)GetLastError());
+            return 1;
+        }
+        fprintf(stderr, "[boot] reserved %s\n", regions[i].what);
+    }
+    /* Commit-on-fault: turn an access to a reserved-but-uncommitted guest page
+     * into a committed zero page, so we don't pay 2+ GB of commit up front. */
+    AddVectoredExceptionHandler(1, [](EXCEPTION_POINTERS* ep) -> LONG {
+        EXCEPTION_RECORD* er = ep->ExceptionRecord;
+        if (er->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && er->NumberParameters >= 2) {
+            void* addr = (void*)er->ExceptionInformation[1];
+            if (VirtualAlloc(addr, 1, MEM_COMMIT, PAGE_READWRITE))
+                return EXCEPTION_CONTINUE_EXECUTION;
+        }
+        return EXCEPTION_CONTINUE_SEARCH;
+    });
+    vm_base = (uint8_t*)0;   /* guest addr == host addr */
+#else
     vm_base = (uint8_t*)calloc(1, VM_SIZE);
     if (!vm_base) { printf("vm alloc failed\n"); return 1; }
+#endif
     ppu_vm_size = VM_SIZE;   /* enable OOB guard */
 
     uint32_t entry = ppu_load_elf(argv[1]);

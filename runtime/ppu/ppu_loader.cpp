@@ -42,7 +42,11 @@ static uint32_t g_tls_vaddr = 0, g_tls_filesz = 0, g_tls_memsz = 0;
 
 static int vm_oob(uint32_t a, uint32_t n)
 {
-    if (ppu_vm_size && (uint64_t)a + n > ppu_vm_size) {
+    /* Under native VA mapping vm_base is 0 and the guest image is mapped at
+     * [0x10000, ppu_vm_size); the low 64 KB is unmapped (OS null guard). Treat
+     * a < 0x10000 (null / tiny pointers) as OOB so lifted code reads 0 / drops
+     * the write instead of faulting on the unmapped low pages. */
+    if (ppu_vm_size && ((uint64_t)a + n > ppu_vm_size || a < 0x10000u)) {
         static int logged = 0;
         if (logged < 40) { fprintf(stderr, "[vm] OOB access 0x%08X (+%u)\n", a, n); logged++; }
         return 1;

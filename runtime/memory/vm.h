@@ -61,6 +61,12 @@ extern "C" {
  * -----------------------------------------------------------------------*/
 extern uint8_t* vm_base;
 
+/* Guest address-space size; set non-zero once the host has mapped guest memory
+ * (ppu_loader.cpp). Under native-VA mapping vm_base is deliberately 0 (guest
+ * addr == host addr), so "is the VM ready?" must test this, not vm_base. */
+extern uint32_t ppu_vm_size;
+#define VM_READY (vm_base != 0 || ppu_vm_size != 0)
+
 /* ---------------------------------------------------------------------------
  * Initialization / Shutdown
  * -----------------------------------------------------------------------*/
@@ -150,7 +156,7 @@ static inline void vm_shutdown(void)
 
 static inline int32_t vm_commit(uint32_t addr, uint32_t size)
 {
-    if (!vm_base) return CELL_EFAULT;
+    if (!VM_READY) return CELL_EFAULT;
     size = VM_ALIGN_UP(size, VM_PAGE_SIZE);
 
 #ifdef _WIN32
@@ -166,7 +172,7 @@ static inline int32_t vm_commit(uint32_t addr, uint32_t size)
 
 static inline int32_t vm_protect(uint32_t addr, uint32_t size, int read, int write, int exec)
 {
-    if (!vm_base) return CELL_EFAULT;
+    if (!VM_READY) return CELL_EFAULT;
     size = VM_ALIGN_UP(size, VM_PAGE_SIZE);
 
 #ifdef _WIN32
