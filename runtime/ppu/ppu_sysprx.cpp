@@ -136,6 +136,18 @@ static void sys_mmapper_allocate_memory(ppu_context* ctx)
 /* A handful of CRT helpers the early boot tends to hit; accept and continue. */
 static void crt_ok(ppu_context* ctx) { ctx->gpr[3] = 0; }
 
+/* Real preemptive thread create/exit live in the lv2 syscall layer
+ * (syscalls/sys_ppu_thread.c) and spawn a host thread that runs the guest
+ * entry through the recompiled code. The CRT also reaches them as
+ * sysPrxForUser import NIDs (gen_hle_nids can't see them — they're not defined
+ * in the sysPrxForUser lib), so bridge the NIDs to the same implementation.
+ * Without this the CRT's thread/static-init runs through an uninitialised
+ * object table and calls heap addresses as function pointers. */
+extern "C" int64_t sys_ppu_thread_create(ppu_context* ctx);
+extern "C" int64_t sys_ppu_thread_exit(ppu_context* ctx);
+static void hle_ppu_thread_create(ppu_context* ctx) { sys_ppu_thread_create(ctx); }
+static void hle_ppu_thread_exit(ppu_context* ctx)   { sys_ppu_thread_exit(ctx); }
+
 extern "C" void ppu_sysprx_register(void)
 {
     ps3_hle_register_ctx(ps3_compute_nid("sys_initialize_tls"),       "sys_initialize_tls",       sys_initialize_tls);
@@ -155,6 +167,8 @@ extern "C" void ppu_sysprx_register(void)
     /* Thread id + memory manager (high-frequency boot imports). The flat VM
      * means map/unmap/free are no-ops: the memory already exists everywhere. */
     ps3_hle_register_ctx(ps3_compute_nid("sys_ppu_thread_get_id"),      "sys_ppu_thread_get_id",      sys_ppu_thread_get_id);
+    ps3_hle_register_ctx(ps3_compute_nid("sys_ppu_thread_create"),      "sys_ppu_thread_create",      hle_ppu_thread_create);
+    ps3_hle_register_ctx(ps3_compute_nid("sys_ppu_thread_exit"),        "sys_ppu_thread_exit",        hle_ppu_thread_exit);
     ps3_hle_register_ctx(ps3_compute_nid("sys_mmapper_allocate_memory"), "sys_mmapper_allocate_memory", sys_mmapper_allocate_memory);
     ps3_hle_register_ctx(ps3_compute_nid("sys_mmapper_map_memory"),     "sys_mmapper_map_memory",     crt_ok);
     ps3_hle_register_ctx(ps3_compute_nid("sys_mmapper_unmap_memory"),   "sys_mmapper_unmap_memory",   crt_ok);

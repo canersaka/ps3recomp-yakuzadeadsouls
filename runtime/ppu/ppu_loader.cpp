@@ -368,8 +368,31 @@ extern "C" int ppu_opd_resolve(uint32_t opd, uint32_t* code, uint32_t* toc)
 
 /* Run from an entry OPD: set up r1 (stack) + r2 (TOC) and dispatch the entry
  * code address. Returns 0 if it ran, -1 if the entry function isn't registered. */
+/* Entry trampoline for sys_ppu_thread_create'd threads. The lv2 thread layer
+ * (syscalls/sys_ppu_thread.c) spawns a host thread, fills ctx (cia = entry OPD,
+ * r3 = arg, stack), and calls this. We resolve the OPD -> {code,toc} the same
+ * way the main entry does and dispatch into the recompiled function, draining
+ * the tail-call trampoline chain so the thread body fully runs. */
+extern "C" void (*g_ppu_thread_entry_trampoline)(ppu_context*);
+static void ppu_thread_entry_trampoline(ppu_context* ctx)
+{
+    uint32_t code = 0, toc = 0;
+    ppu_opd_resolve((uint32_t)ctx->cia, &code, &toc);
+    if (toc) ctx->gpr[2] = toc;
+    if (!ctx->gpr[13]) ctx->gpr[13] = PPU_TLS_TP;   /* share main TLS for now */
+    ppu_fn fn = ppu_lookup(code);
+    if (!fn) {
+        fprintf(stderr, "[ppu] thread entry 0x%08X (cia=0x%08X) not registered\n",
+                code, (uint32_t)ctx->cia);
+        return;
+    }
+    fn(ctx);
+    while (g_trampoline_fn) { void (*tf)(void*) = g_trampoline_fn; g_trampoline_fn = 0; tf(ctx); }
+}
+
 extern "C" int ppu_run(uint32_t entry_opd, uint32_t stack_top)
 {
+    g_ppu_thread_entry_trampoline = ppu_thread_entry_trampoline;
     uint32_t code = 0, toc = 0;
     ppu_opd_resolve(entry_opd, &code, &toc);
     ppu_fn fn = ppu_lookup(code);
