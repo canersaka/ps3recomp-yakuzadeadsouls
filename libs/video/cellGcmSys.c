@@ -422,8 +422,12 @@ void cellGcmTickFlip(void)
 }
 
 /* Drain the game's GCM FIFO into the RSX backend. Called from the present thread
- * (boot_main vblank_ticker). Stub for now -- presenting the backend's clear color
- * proves the window/present path; real command-buffer parsing is wired next. */
+ * (boot_main vblank_ticker). Not yet active: s_control.put stays 0 because
+ * cellGcmGetControlRegister returns a HOST pointer, so the title's put writes
+ * don't reach this struct (the control register must live in guest memory for
+ * the recompiled code to update it via vm_write). Once that's fixed (+ the title
+ * runs past its early self-exit to actually draw), parse get..put here with
+ * rsx_process_command_buffer so the game's clears/draws render. */
 void cellGcm_rsx_process_fifo(void)
 {
 }
