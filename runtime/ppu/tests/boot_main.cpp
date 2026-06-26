@@ -147,12 +147,26 @@ static void harness_guest_caller(uint32_t opd, uint64_t a0, uint64_t a1, uint64_
 { ppu_guest_call(opd, a0, a1, a2, a3); }
 
 #ifdef _WIN32
+/* RSX present backend (libs/video/rsx_d3d12_backend.c). Driven on the vblank
+ * thread so the D3D12 device + window message pump live on one thread. */
+extern "C" int  rsx_d3d12_backend_init(uint32_t w, uint32_t h, const char* title);
+extern "C" void rsx_d3d12_backend_present(void);
+extern "C" int  rsx_d3d12_backend_pump_messages(void);
+extern "C" void cellGcm_rsx_process_fifo(void);   /* cellGcmSys.c: drain get->put */
+
 static DWORD WINAPI vblank_ticker(LPVOID)
 {
+    int rsx_ok = (rsx_d3d12_backend_init(1280, 720, "You Don't Know Jack (ps3recomp)") == 0);
+    fprintf(stderr, "[rsx] backend init %s\n", rsx_ok ? "OK -- window open" : "FAILED");
     for (;;) {
         Sleep(16);            /* ~60 Hz */
         cellGcmTickVBlank();
         cellGcmTickFlip();
+        if (rsx_ok) {
+            if (rsx_d3d12_backend_pump_messages() != 0) { rsx_ok = 0; }
+            cellGcm_rsx_process_fifo();      /* execute the game's GCM commands */
+            rsx_d3d12_backend_present();     /* present the frame */
+        }
     }
     return 0;
 }

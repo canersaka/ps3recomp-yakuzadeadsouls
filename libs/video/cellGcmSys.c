@@ -421,6 +421,13 @@ void cellGcmTickFlip(void)
     }
 }
 
+/* Drain the game's GCM FIFO into the RSX backend. Called from the present thread
+ * (boot_main vblank_ticker). Stub for now -- presenting the backend's clear color
+ * proves the window/present path; real command-buffer parsing is wired next. */
+void cellGcm_rsx_process_fifo(void)
+{
+}
+
 /* NID: 0xDC09357E */
 s32 cellGcmSetDisplayBuffer(u32 bufferId, u32 offset, u32 pitch,
                             u32 width, u32 height)
