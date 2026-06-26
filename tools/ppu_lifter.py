@@ -1200,10 +1200,12 @@ class PPULifter:
 
         if mn in ("subfe", "subfe."):
             rd, ra, rb = _reg_idx(ops[0]), _reg_idx(ops[1]), _reg_idx(ops[2])
+            # XER[CA] = ADC carry-out of (~RA + RB + ca), per PowerISA / RPCS3 add64_flags.
             return (f"{{ uint64_t ca = (ctx->xer >> 29) & 1; "
-                    f"uint64_t result = ~ctx->gpr[{ra}] + ctx->gpr[{rb}] + ca; "
-                    f"ctx->xer = (ctx->xer & ~(1u << 29)) | "
-                    f"((result <= ctx->gpr[{rb}] && ca) ? (1u << 29) : 0); "
+                    f"uint64_t a = ~ctx->gpr[{ra}], b = ctx->gpr[{rb}]; "
+                    f"uint64_t s1 = a + b; uint64_t co = (s1 < a); "
+                    f"uint64_t result = s1 + ca; co |= (result < s1); "
+                    f"ctx->xer = (ctx->xer & ~(1u << 29)) | ((uint32_t)co << 29); "
                     f"ctx->gpr[{rd}] = result; }}")
 
         # ------- addc/subfc (carry arithmetic, carry-out only, no carry-in) -------
@@ -1443,16 +1445,22 @@ class PPULifter:
         # ------- addme/subfme/subfze (carry arithmetic, 2-op) -------
         if mn.startswith("addme"):
             rd, ra = _reg_idx(ops[0]), _reg_idx(ops[1])
+            # addme = RA + CA - 1 = RA + (~0) + CA; XER[CA] = ADC carry-out.
             return (f"{{ uint64_t ca = (ctx->xer >> 29) & 1; "
-                    f"uint64_t result = ctx->gpr[{ra}] + ca - 1; "
-                    f"ctx->xer = (ctx->xer & ~(1u << 29)) | "
-                    f"((result >= ctx->gpr[{ra}]) ? (1u << 29) : 0); "
+                    f"uint64_t a = ctx->gpr[{ra}], b = ~0ULL; "
+                    f"uint64_t s1 = a + b; uint64_t co = (s1 < a); "
+                    f"uint64_t result = s1 + ca; co |= (result < s1); "
+                    f"ctx->xer = (ctx->xer & ~(1u << 29)) | ((uint32_t)co << 29); "
                     f"ctx->gpr[{rd}] = result; }}")
 
         if mn.startswith("subfme"):
             rd, ra = _reg_idx(ops[0]), _reg_idx(ops[1])
+            # subfme = ~RA + CA - 1 = ~RA + (~0) + CA; was MISSING the XER[CA] update.
             return (f"{{ uint64_t ca = (ctx->xer >> 29) & 1; "
-                    f"uint64_t result = ~ctx->gpr[{ra}] + ca - 1; "
+                    f"uint64_t a = ~ctx->gpr[{ra}], b = ~0ULL; "
+                    f"uint64_t s1 = a + b; uint64_t co = (s1 < a); "
+                    f"uint64_t result = s1 + ca; co |= (result < s1); "
+                    f"ctx->xer = (ctx->xer & ~(1u << 29)) | ((uint32_t)co << 29); "
                     f"ctx->gpr[{rd}] = result; }}")
 
         if mn.startswith("subfze"):
