@@ -247,8 +247,30 @@ static DWORD WINAPI hang_watchdog(LPVOID)
  * that, every spawned thread's stack access is OOB (reads 0 / writes dropped)
  * and the thread crashes. Size to include the stack region: ~3.75 GB, lazily
  * committed by the OS (only touched pages are backed). */
-#define VM_SIZE    0xE0000000u
+#define VM_SIZE    0x100010000ull /* full 32-bit guest space + 64K guard (top-edge reads), demand-committed */
 #define STACK_TOP  0x0FF00000u   /* main-thread stack, below the 0x10000000 segment */
+
+#ifdef _WIN32
+/* Demand-paging for the flat VM: reserve the full 4 GB guest space up front (no
+ * commit cost) and commit each 64 KB page on first access. This makes EVERY
+ * 32-bit guest offset valid -- a garbage guest pointer reads as zero instead of
+ * crashing the process (essential now that the recompiled engine runs deep and
+ * worker threads touch incomplete state). Out-of-arena faults fall through to
+ * the crash reporter. */
+static LONG WINAPI vm_commit_veh(EXCEPTION_POINTERS* ep)
+{
+    if (ep->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
+        ULONG_PTR fault = ep->ExceptionRecord->ExceptionInformation[1];
+        uintptr_t base  = (uintptr_t)vm_base;
+        if (vm_base && fault >= base && fault < base + VM_SIZE) {
+            void* page = (void*)(fault & ~(uintptr_t)0xFFFF);
+            if (VirtualAlloc(page, 0x10000, MEM_COMMIT, PAGE_READWRITE))
+                return EXCEPTION_CONTINUE_EXECUTION;
+        }
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+#endif
 
 int main(int argc, char** argv)
 {
@@ -269,9 +291,16 @@ int main(int argc, char** argv)
      * HLE functions that take guest pointers must translate via vm_base /
      * vm_write* (which also byte-swap) -- a raw *guest_ptr would deref the host
      * buffer's offset incorrectly. */
-    vm_base = (uint8_t*)calloc(1, VM_SIZE);
+#ifdef _WIN32
+    /* Reserve the full 4 GB guest space; pages commit on first touch via the VEH. */
+    AddVectoredExceptionHandler(1, vm_commit_veh);
+    vm_base = (uint8_t*)VirtualAlloc(NULL, VM_SIZE, MEM_RESERVE, PAGE_READWRITE);
+    ppu_vm_size = 0;   /* full 32-bit space backed -> OOB guard unnecessary */
+#else
+    vm_base = (uint8_t*)calloc(1, 0xE0000000u);
+    ppu_vm_size = 0xE0000000u;
+#endif
     if (!vm_base) { printf("vm alloc failed\n"); return 1; }
-    ppu_vm_size = VM_SIZE;   /* enable OOB guard */
 
     uint32_t entry = ppu_load_elf(argv[1]);
     if (!entry) { printf("load failed\n"); return 1; }
