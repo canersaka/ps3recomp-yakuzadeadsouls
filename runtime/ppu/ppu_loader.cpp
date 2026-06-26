@@ -96,6 +96,19 @@ uint32_t vm_read32(uint64_t a) { if (vm_oob((uint32_t)a,4)) return 0; uint32_t v
 #ifdef VM_SAMPLE_READS
     { static uint64_t c=0; if ((++c % 4000000ull)==0) fprintf(stderr, "[sample] read32 0x%08X = 0x%08X\n", (uint32_t)a, __builtin_bswap32(v)); }
 #endif
+    /* Frequency histogram (YDKJ_HOTMAP): find busy-loop polled addresses even
+     * when the loop reads several addresses per iteration (so the consecutive
+     * HOTREAD detector resets). Dumps the hottest addresses periodically. */
+    { static int en=-1; if (en<0) en = getenv("YDKJ_HOTMAP") ? 1 : 0;
+      if (en) { enum { NB=2048 }; static uint32_t addr[NB]; static uint32_t cnt[NB];
+        static uint64_t tot=0; uint32_t ea=(uint32_t)a; uint32_t h=(ea>>2)&(NB-1);
+        if (addr[h]!=ea){addr[h]=ea;cnt[h]=0;} cnt[h]++;
+        if ((++tot % 20000000ull)==0) {
+          uint32_t bi=0; for(uint32_t i=0;i<NB;i++) if(cnt[i]>cnt[bi]) bi=i;
+          uint32_t b2=(bi+1)&(NB-1); for(uint32_t i=0;i<NB;i++) if(i!=bi && cnt[i]>cnt[b2]) b2=i;
+          fprintf(stderr,"[HOTMAP] hottest read32: 0x%08X (%ux)  2nd: 0x%08X (%ux)\n",
+                  addr[bi],cnt[bi],addr[b2],cnt[b2]);
+          for(uint32_t i=0;i<NB;i++) cnt[i]=0; } } }
     /* Hot-poll detector: a thread spinning on the same address (e.g. a GCM FIFO
      * get-pointer / label waiting on RSX) reads it thousands of times in a row. */
     { static __declspec(thread) uint32_t last=0xFFFFFFFFu; static __declspec(thread) uint32_t n=0;
