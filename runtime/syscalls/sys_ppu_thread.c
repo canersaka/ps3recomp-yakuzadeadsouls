@@ -211,6 +211,19 @@ int64_t sys_ppu_thread_create(ppu_context* ctx)
             t->name, (unsigned long long)entry, (unsigned long long)arg,
             stack_size, priority);
 
+    /* Diagnostic (YDKJ_NOHDLR): suppress libsre's SPURS handler threads (entry in
+     * the libsre image range) -- they assert that the SPU side isn't operational
+     * and crash. Skipping them lets the main thread (already past
+     * cellSpursInitialize) keep running, to see how far it gets. The thread is
+     * "created" (tid returned) but never spawned. */
+    if (getenv("YDKJ_NOHDLR") && entry >= 0x30000000 && entry < 0x30040000) {
+        fprintf(stderr, "[SYS]   (suppressed libsre handler thread entry=0x%08llX)\n",
+                (unsigned long long)entry);
+        t->state = PPU_THREAD_STATE_RUNNING; /* leave it parked */
+        table_unlock();
+        return CELL_OK;
+    }
+
     /* Create the host thread. Give it a large RESERVED stack: each recompiled
      * guest call is a real host call, so deep guest call chains nest deeply on
      * the host stack and overflow the 1 MB default. Reserve 256 MB (committed
