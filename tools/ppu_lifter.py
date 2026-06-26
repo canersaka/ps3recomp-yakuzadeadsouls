@@ -2667,20 +2667,25 @@ def main() -> None:
                     _ent = _a - 4
                 else:
                     _ent = _a
-                # A function may start with a setup instruction before its
+                # A function may start with a few setup instructions before its
                 # mflr/stdu prologue (e.g. `cmpwi r3,0` that sets cr for a later
-                # branch). The real entry is then a branch/call target a few insns
-                # before the prologue. Adjust back to it, else the prologue is
-                # taken as the entry and the setup insn is orphaned into a 1-insn
-                # fragment with a dangling fall-through (observed: libsre
-                # func_3000AF2C -> an infinite 2-fragment loop hanging
-                # cellSpursInitialize). Only step onto addresses that are real branch
-                # targets, so we never absorb the previous function's tail.
-                for _ in range(2):
-                    if (_ent - 4) in _targets:
-                        _ent -= 4
-                    else:
+                # branch, or `mfcr r12` saving the condition register). The real
+                # entry is then a couple of insns before the prologue -- the first
+                # instruction after the PREVIOUS function's terminator. Walk back
+                # over the setup insns to it, so the prologue isn't taken as the
+                # entry and the setup insns orphaned into a dangling fragment.
+                # (Observed: libsre func_3000AF2C -> infinite 2-fragment loop that
+                # hung cellSpursInitialize; func_3000B504 -> a handler entry
+                # reached only via an OPD that was never lifted, so its SPURS
+                # handler thread returned instantly and cellSpurs rolled back the
+                # SPU thread group.) Stop at the previous terminator so we never
+                # absorb the previous function's body; bound the walk to 3 insns.
+                _TERM = ("b", "ba", "blr", "blrl", "bctr", "bctrl", "rfid", "rfi")
+                for _ in range(3):
+                    _prev = _by_addr.get(_ent - 4)
+                    if _prev is None or _prev.mnemonic in _TERM:
                         break
+                    _ent -= 4
                 _func_entries.add(_ent)
 
     _recovered = []
