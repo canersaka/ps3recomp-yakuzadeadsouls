@@ -15,10 +15,42 @@
 #include "spu_dma.h"
 #include <stdint.h>
 #include <stdio.h>
+#include <setjmp.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* ---------------------------------------------------------------------------
+ * Clean SPU job abort (longjmp). The `br .` halt idiom and other terminal
+ * spins can't be escaped by setting a status flag (lifted code never checks
+ * it), so spu_halt() longjmps back to spu_run_with_halt() in the dispatcher.
+ * -----------------------------------------------------------------------*/
+#if defined(_MSC_VER)
+#  define SPU_TLS __declspec(thread)
+#else
+#  define SPU_TLS __thread
+#endif
+static SPU_TLS jmp_buf s_spu_halt_env;
+static SPU_TLS int     s_spu_halt_armed = 0;
+
+void spu_halt(spu_context* ctx)
+{
+    (void)ctx;
+    if (s_spu_halt_armed) { s_spu_halt_armed = 0; longjmp(s_spu_halt_env, 1); }
+}
+
+/* Run a lifted SPU entry with a halt landing pad. Returns 1 if the job halted
+ * (via spu_halt), 0 if it returned normally. */
+int spu_run_with_halt(void (*entry)(spu_context*), spu_context* ctx)
+{
+    int halted = 0;
+    s_spu_halt_armed = 1;
+    if (setjmp(s_spu_halt_env) != 0) halted = 1;   /* came back via longjmp */
+    else                             entry(ctx);    /* run the job          */
+    s_spu_halt_armed = 0;
+    return halted;
+}
 
 /* ===========================================================================
  * Per-context MFC engine registry

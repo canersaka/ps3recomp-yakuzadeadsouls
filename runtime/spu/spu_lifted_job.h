@@ -67,7 +67,8 @@ static inline int32_t spu_run_lifted_job_abi(spu_lifted_entry_fn entry,
     } else {
         ctx.gpr[3]._u32[0] = args_ea;                           /* simple-job arg -> r3 */
     }
-    entry(&ctx);                                                /* run the lifted job  */
+    { extern int spu_run_with_halt(void (*)(spu_context*), spu_context*);
+      spu_run_with_halt(entry, &ctx); }                         /* run with halt pad   */
     if (local_store) memcpy(local_store, ctx.ls, SPU_LS_SIZE);  /* LS back out */
     return 0;
 }

@@ -232,6 +232,24 @@ class SPULifter:
             func.body_lines.append(
                 f"    {{ ctx->pc = 0x{end:X}; {self.prefix}spu_func_{end:08X}(ctx); return; }}")
 
+        # Infinite no-op self-loop (the SPU `br .` halt idiom): a function whose
+        # whole body is nops + an unconditional branch back into itself does
+        # nothing but spin. The default lifting renders it as `goto loc_<x>` --
+        # an infinite C loop that hangs the SPU host thread forever (e.g. the
+        # SPURS task runtime's terminal/idle state). Render it as a clean abort
+        # (spu_halt longjmps back to the dispatcher) so the host thread returns.
+        body_insns = [i for i in insns if start <= i.addr < end]
+        if body_insns and all(i.mnemonic in ("nop", "lnop", "br", "bra")
+                              for i in body_insns):
+            last = body_insns[-1]
+            ltgt = self._branch_target(last)
+            if (last.mnemonic in ("br", "bra") and ltgt is not None
+                    and start <= ltgt < end):
+                func.body_lines = [
+                    "    /* infinite no-op self-loop (SPU halt idiom) -> abort */",
+                    "    spu_halt(ctx); return;",
+                ]
+
         self.functions.append(func)
         return func
 
