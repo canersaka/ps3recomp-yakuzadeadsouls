@@ -204,6 +204,9 @@ _CS_SAVE_RE = re.compile(
     r'vm_write64\(ctx->gpr\[1\] \+ (-?0x[0-9A-Fa-f]+|-?\d+), ctx->gpr\[(1[4-9]|2[0-9]|3[01])\]\);')
 _CS_REST_RE = re.compile(
     r'ctx->gpr\[(1[4-9]|2[0-9]|3[01])\] = vm_read64\(ctx->gpr\[1\] \+ (-?0x[0-9A-Fa-f]+|-?\d+)\);')
+# A primary stack-frame allocation (lifted `stdu r1,-N(r1)`); its presence means
+# the body is a real function/merge, not a pure mid-function tail-entry.
+_FRAME_ALLOC = "ctx->gpr[1] += -0x"
 
 
 def _xea(ra, rb):
@@ -415,6 +418,14 @@ class PPULifter:
         #    because none of THIS body's callees have run yet to corrupt it.
         # Either way the restore then reads a value captured before any frame
         # drift, immune to a deeper callee clobbering the slot.
+        # The MEMORY snapshot is only valid for a PURE tail-entry -- a body with
+        # no primary frame allocation (`stdu r1,-N`), so the shared frame slot
+        # already holds the original saved value at entry. A body that DOES have
+        # a stdu is either a normal function (its save is in-body -> pairs) or a
+        # merged function (two prologues); for those, an unpaired restore must NOT
+        # be memory-snapshotted (the snapshot would run before the stdu and read a
+        # stale slot). Leave such restores reading the frame (pairing-only).
+        _has_stdu = any(_FRAME_ALLOC in _l for _l in func.body_lines)
         _saved_slots = set()
         for _l in func.body_lines:
             _m = _CS_SAVE_RE.search(_l)
@@ -428,9 +439,10 @@ class PPULifter:
                 _reg = int(_m.group(1)); _off = _m.group(2)
                 if (_off, _m.group(1)) in _saved_slots:
                     _reg_snap.add(_reg)
-                else:
+                    func.body_lines[_i] = f"    ctx->gpr[{_reg}] = _cs_{_reg};"
+                elif not _has_stdu:
                     _mem_snap.setdefault(_reg, _off)
-                func.body_lines[_i] = f"    ctx->gpr[{_reg}] = _cs_{_reg};"
+                    func.body_lines[_i] = f"    ctx->gpr[{_reg}] = _cs_{_reg};"
         if _reg_snap or _mem_snap:
             _decls = [f"    uint64_t _cs_{_n} = ctx->gpr[{_n}];"
                       for _n in sorted(_reg_snap)]
