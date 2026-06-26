@@ -2560,15 +2560,17 @@ def main() -> None:
             _a = _ordered[_j]
             _p = _prev_nonnop(_j)
             # A prologue is a separate function when (a) it is a direct
-            # control-flow target -- something calls/branches to it, so it is a
-            # real entry regardless of what precedes it -- or (b) it immediately
-            # follows a definitive return (skipping padding), which marks a new
-            # function even when reached only indirectly (OPD / vtable). You never
-            # branch into a frame-allocating prologue mid-function, so neither case
-            # cuts a real function with internal forward branches.
+            # control-flow target -- something calls/branches to it -- or (b) it
+            # immediately follows ANY unconditional control-flow terminator
+            # (return blr/rfid, or jump b/ba/bctr; padding skipped). You never
+            # allocate a stack frame mid-function right after a jump, so a
+            # prologue after a terminator is always a new function -- this catches
+            # functions reached only indirectly AND tail-call-terminated
+            # predecessors, without ever cutting a real function's internal
+            # forward branches (those don't land on a frame-allocating prologue).
             if _is_prologue(_by_addr[_a]) and (
                     _a in _targets
-                    or (_p is not None and _p.mnemonic in _RETURNS)):
+                    or (_p is not None and _p.mnemonic in (_RETURNS | _JUMPS))):
                 _cuts.append(_a)
             _j += 1
         if not _cuts:
