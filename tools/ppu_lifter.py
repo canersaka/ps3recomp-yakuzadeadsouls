@@ -967,6 +967,15 @@ class PPULifter:
             target_str = ops[-1] if ops else ""
             try:
                 tgt = int(target_str, 16)
+                if (func.start_addr <= tgt < func.end_addr
+                        and tgt != func.start_addr
+                        and tgt in self.function_entries):
+                    # conditional tail call to a function prologue inside this
+                    # (merged) range -- trampoline, don't goto (see the `b` case).
+                    cond = self._branch_condition(mn, ops)
+                    self.branch_targets.add(tgt)
+                    return (f"if ({cond}) {{ g_trampoline_fn = "
+                            f"(void(*)(void*)){self.prefix}func_{tgt:08X}; return; }}")
                 if func.start_addr <= tgt < func.end_addr:
                     cond = self._branch_condition(mn, ops)
                     return f"if ({cond}) goto loc_{tgt:08X};"
