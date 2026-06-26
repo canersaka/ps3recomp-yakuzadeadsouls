@@ -79,8 +79,29 @@ static int vm_oob(uint32_t a, uint32_t n)
  * Big-endian guest memory accessors (PPU is big-endian; vm_base holds the
  * guest image in its native byte order).
  * -----------------------------------------------------------------------*/
+/* Shared read-frequency histogram (YDKJ_HOTMAP): finds busy-loop polled
+ * addresses across all read widths even when the loop touches several addresses
+ * per iteration (so the consecutive HOTREAD detectors reset). */
+static void vm_hotmap(uint32_t ea, int width)
+{
+    static int en = -1; if (en < 0) en = getenv("YDKJ_HOTMAP") ? 1 : 0;
+    if (!en) return;
+    enum { NB = 4096 };
+    static uint32_t addr[NB]; static uint32_t cnt[NB]; static unsigned long long tot = 0;
+    uint32_t h = (ea >> 2) & (NB - 1);
+    if (addr[h] != ea) { addr[h] = ea; cnt[h] = 0; }
+    cnt[h]++;
+    if ((++tot % 8000000ull) == 0) {
+        uint32_t b1 = 0, b2 = 0;
+        for (uint32_t i = 0; i < NB; i++) if (cnt[i] > cnt[b1]) b1 = i;
+        for (uint32_t i = 0; i < NB; i++) if (i != b1 && cnt[i] > cnt[b2]) b2 = i;
+        fprintf(stderr, "[HOTMAP] hottest read: 0x%08X (%ux) | 2nd 0x%08X (%ux) [w=%d]\n",
+                addr[b1], cnt[b1], addr[b2], cnt[b2], width);
+        for (uint32_t i = 0; i < NB; i++) cnt[i] = 0;
+    }
+}
 extern "C" {
-uint8_t  vm_read8 (uint64_t a) { if (vm_oob((uint32_t)a,1)) return 0;
+uint8_t  vm_read8 (uint64_t a) { if (vm_oob((uint32_t)a,1)) return 0; vm_hotmap((uint32_t)a,1);
 #ifdef VM_SAMPLE_READS
     { static uint64_t c=0; if ((++c % 2000000ull)==0) fprintf(stderr, "[sample] read8  0x%08X ra0=%p ra1=%p\n", (uint32_t)a, __builtin_return_address(0), __builtin_return_address(1)); }
 #endif
@@ -88,7 +109,7 @@ uint8_t  vm_read8 (uint64_t a) { if (vm_oob((uint32_t)a,1)) return 0;
       if ((uint32_t)a==last) { if (++n==200000) { fprintf(stderr, "[HOTREAD8] spinning on 0x%08X\n", (uint32_t)a); n=0; } }
       else { last=(uint32_t)a; n=0; } }
     return vm_base[(uint32_t)a]; }
-uint16_t vm_read16(uint64_t a) { if (vm_oob((uint32_t)a,2)) return 0; uint16_t v; memcpy(&v, vm_base + (uint32_t)a, 2);
+uint16_t vm_read16(uint64_t a) { if (vm_oob((uint32_t)a,2)) return 0; vm_hotmap((uint32_t)a,2); uint16_t v; memcpy(&v, vm_base + (uint32_t)a, 2);
     { static __declspec(thread) uint32_t last=0xFFFFFFFFu; static __declspec(thread) uint32_t n=0;
       if ((uint32_t)a==last) { if (++n==200000) { fprintf(stderr, "[HOTREAD16] spinning on 0x%08X\n", (uint32_t)a); n=0; } } else { last=(uint32_t)a; n=0; } }
     return __builtin_bswap16(v); }
@@ -118,7 +139,7 @@ uint32_t vm_read32(uint64_t a) { if (vm_oob((uint32_t)a,4)) return 0; uint32_t v
       if ((uint32_t)a==last) { if (++n==200000) { fprintf(stderr, "[HOTREAD] spinning on 0x%08X (=0x%08X)\n", (uint32_t)a, __builtin_bswap32(v)); n=0; } }
       else { last=(uint32_t)a; n=0; } }
     return __builtin_bswap32(v); }
-uint64_t vm_read64(uint64_t a) { if (vm_oob((uint32_t)a,8)) return 0; uint64_t v; memcpy(&v, vm_base + (uint32_t)a, 8);
+uint64_t vm_read64(uint64_t a) { if (vm_oob((uint32_t)a,8)) return 0; vm_hotmap((uint32_t)a,8); uint64_t v; memcpy(&v, vm_base + (uint32_t)a, 8);
 #ifdef VM_SAMPLE_READS
     { static uint64_t c=0; if ((++c % 2000000ull)==0) fprintf(stderr, "[sample] read64 0x%08X\n", (uint32_t)a); }
 #endif
