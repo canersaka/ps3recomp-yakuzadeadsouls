@@ -163,15 +163,15 @@ extern "C" const char* g_last_hle_name;
 /* When the boot wedges, snapshot every other thread's instruction pointer as a
  * module RVA (symbolize with llvm-symbolizer) so a guest spin/wait is pinned to
  * an exact lifted function -- the HLE breadcrumb only covers HLE calls. */
-static DWORD WINAPI hang_watchdog(LPVOID)
+/* Snapshot every other thread's RIP. For threads in the boot module (lifted
+ * guest code) print the RVA (symbolizable) + a couple of stack-return RVAs;
+ * for threads parked in a DLL (OS waits / FMOD) print the module name so they
+ * are not mistaken for guest spins. Called twice so the caller can diff which
+ * guest thread is genuinely parked (same RIP) vs. still progressing. */
+static void dump_threads(const char* label, HMODULE self)
 {
-    Sleep(8000);
-    fprintf(stderr, "[WATCHDOG] 8s elapsed; last HLE call = 0x%08X (%s)\n",
-            g_last_hle_nid, g_last_hle_name ? g_last_hle_name : "");
-    HMODULE self = NULL;
-    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                       GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                       (LPCSTR)&hang_watchdog, &self);
+    fprintf(stderr, "[WATCHDOG] %s; last HLE call = 0x%08X (%s)\n",
+            label, g_last_hle_nid, g_last_hle_name ? g_last_hle_name : "");
     DWORD me = GetCurrentThreadId(), pid = GetCurrentProcessId();
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
     THREADENTRY32 te; te.dwSize = sizeof te;
@@ -188,10 +188,17 @@ static DWORD WINAPI hang_watchdog(LPVOID)
                 GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
                                    GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                                    (LPCSTR)ctx.Rip, &m);
-                fprintf(stderr, "[WATCHDOG]   tid %5lu rip rva=0x%llX %s\n",
-                        (unsigned long)te.th32ThreadID,
-                        (unsigned long long)((char*)ctx.Rip - (char*)(m ? m : self)),
-                        m == self ? "(boot)" : "(other module)");
+                if (m == self) {
+                    fprintf(stderr, "[WATCHDOG]   tid %5lu BOOT rip rva=0x%llX\n",
+                            (unsigned long)te.th32ThreadID,
+                            (unsigned long long)((char*)ctx.Rip - (char*)self));
+                } else {
+                    char path[MAX_PATH] = "?";
+                    if (m) GetModuleFileNameA(m, path, sizeof path);
+                    const char* base = strrchr(path, '\\');
+                    fprintf(stderr, "[WATCHDOG]   tid %5lu in %s\n",
+                            (unsigned long)te.th32ThreadID, base ? base + 1 : path);
+                }
             }
             ResumeThread(th);
             CloseHandle(th);
@@ -199,6 +206,18 @@ static DWORD WINAPI hang_watchdog(LPVOID)
     }
     if (snap != INVALID_HANDLE_VALUE) CloseHandle(snap);
     fflush(stderr);
+}
+
+static DWORD WINAPI hang_watchdog(LPVOID)
+{
+    HMODULE self = NULL;
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                       GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       (LPCSTR)&hang_watchdog, &self);
+    Sleep(8000);
+    dump_threads("8s sample", self);
+    Sleep(7000);
+    dump_threads("15s sample", self);
     return 0;
 }
 #endif
