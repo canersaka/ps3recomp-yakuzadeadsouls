@@ -290,6 +290,13 @@ class PPULifter:
         self.functions: list[LiftedFunction] = []
         self.call_targets: set[int] = set()
         self.branch_targets: set[int] = set()  # all func_X references (b/bc trampolines)
+        # Addresses that begin a function prologue (stdu r1,-N, adjusted back to a
+        # preceding mflr r0). A `b` to one of these is always a TAIL CALL, even
+        # when the target sits inside the current (merged) function's range -- so
+        # it must be emitted as a trampoline, not an internal goto, or the
+        # callee's epilogue runs against the caller's frame (frame drift). Set by
+        # main() from the disassembly; empty = legacy (range-based routing only).
+        self.function_entries: set[int] = set()
         # Optional executable-code window [code_lo, code_hi). When set, branch /
         # call targets that fall outside it are NOT promoted to func_X (they are
         # data the boundary detector mis-read as code -- e.g. .rodata living in
@@ -890,6 +897,15 @@ class PPULifter:
             target = ops[0]
             try:
                 tgt = int(target, 16)
+                if (func.start_addr <= tgt < func.end_addr
+                        and tgt != func.start_addr
+                        and tgt in self.function_entries):
+                    # `b` to a function prologue inside this (merged) range: a
+                    # tail call, NOT an internal jump. Trampoline so the callee
+                    # runs on its own frame; the mid-function pass lifts func_<tgt>
+                    # (it starts at the prologue, so it's a clean framed function).
+                    self.branch_targets.add(tgt)
+                    return f"{{ g_trampoline_fn = (void(*)(void*)){self.prefix}func_{tgt:08X}; return; }}"
                 if func.start_addr <= tgt < func.end_addr:
                     return f"goto loc_{tgt:08X};"
                 elif self.code_hi is not None and not (self.code_lo <= tgt < self.code_hi):
@@ -2648,6 +2664,21 @@ def main() -> None:
         print(f"  Boundary recovery: split {_ncuts} merged function(s) via prologue scan")
         func_bounds = _recovered
 
+    # Every function-entry prologue (stdu r1,-N, adjusted to a preceding mflr r0)
+    # -- used to route a `b` into a merged range as a tail call (see the `b`
+    # handler). Independent of whether the boundary was actually split, so it
+    # also fixes merges the prologue-scan did not cut.
+    _func_entries = set()
+    for _a, _ins in _by_addr.items():
+        if _ins.mnemonic == "stdu":
+            _o = _ins.operands.replace(" ", "")
+            if _o.startswith("r1,-") and _o.endswith("(r1)"):
+                _pp = _by_addr.get(_a - 4)
+                if _pp is not None and _pp.mnemonic == "mflr" and _pp.operands.strip() == "r0":
+                    _func_entries.add(_a - 4)
+                else:
+                    _func_entries.add(_a)
+
     # ----- jump-table (computed bctr) discovery ---------------------------
     # gcc switch dispatchers reach their case blocks via `mtctr; bctr` through
     # a data jump table — computed targets static analysis can't see, so the
@@ -2724,6 +2755,7 @@ def main() -> None:
     lifter = PPULifter(prefix=args.symbol_prefix)
     lifter.code_hi = args.code_end
     lifter.hle_stub_nids = hle_stubs
+    lifter.function_entries = _func_entries
 
     # Optional: load a recovered-name map (from Ghidra analysis) to annotate
     # generated functions with meaningful names as comments.
