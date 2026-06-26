@@ -75,8 +75,23 @@ int64_t sys_timer_usleep(ppu_context* ctx)
             Sleep((DWORD)(usec / 1000));
         }
     } else if (usec > 0) {
-        /* Very short sleep -- yield */
-        SwitchToThread();
+        /* Sub-millisecond sleep. Sleep()/waitable timers round up to the
+         * ~0.5-1 ms scheduler quantum, far too coarse for a guest that relies
+         * on accurate microsecond pacing -- a short usleep() spin waiting on
+         * another thread to make progress otherwise collapses to a single yield
+         * and busy-spins at full speed (so the wait is effectively a no-op).
+         * Busy-wait to a precise QPC deadline, yielding inside the spin
+         * (SwitchToThread) so a sibling host thread the guest may be waiting on
+         * still gets the core. Mirrors RPCS3's "Usleep Only" TSC busy-tail. */
+        ensure_qpc_init();
+        LARGE_INTEGER qpc_start, qpc_now;
+        QueryPerformanceCounter(&qpc_start);
+        const int64_t qpc_deadline = qpc_start.QuadPart +
+            (int64_t)((usec * (uint64_t)s_qpc_freq.QuadPart) / 1000000ULL);
+        do {
+            SwitchToThread();
+            QueryPerformanceCounter(&qpc_now);
+        } while (qpc_now.QuadPart < qpc_deadline);
     }
 #else
     if (usec > 0) {
