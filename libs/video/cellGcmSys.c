@@ -455,8 +455,9 @@ s32 cellGcmSetFlipCommand(u32 bufferId)
     s_flip_status = CELL_GCM_FLIP_STATUS_DONE;
     s_last_flip_time = get_timestamp_ns();
 
-    if (s_flip_handler)
-        s_flip_handler(0);  /* head 0 = primary display */
+    /* Invoke via OPD resolution, not a raw call into guest code. */
+    if (s_flip_handler_opd && g_ps3_guest_caller)
+        g_ps3_guest_caller(s_flip_handler_opd, 0, 0, 0, 0);  /* head 0 = primary display */
 
     return CELL_OK;
 }
@@ -491,8 +492,11 @@ s32 cellGcmSetPrepareFlip(void* ctx, u32 bufferId)
     s_flip_status = CELL_GCM_FLIP_STATUS_DONE;
     s_last_flip_time = get_timestamp_ns();
 
-    if (s_flip_handler)
-        s_flip_handler(0);
+    /* Invoke the guest flip handler via OPD resolution -- s_flip_handler holds
+     * the raw guest OPD (e.g. 0x530D70); calling it as a host function pointer
+     * jumps into guest code and crashes. */
+    if (s_flip_handler_opd && g_ps3_guest_caller)
+        g_ps3_guest_caller(s_flip_handler_opd, 0, 0, 0, 0);
 
     return CELL_OK;
 }

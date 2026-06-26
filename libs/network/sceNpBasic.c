@@ -54,6 +54,20 @@ s32 sceNpBasicTerm(void)
     return CELL_OK;
 }
 
+/* The title's main loop drains PSN events with `while (sceNpBasicGetEvent(...)
+ * == CELL_OK) { ... }`. Unregistered, this returned 0 (CELL_OK) forever -> the
+ * loop never terminated and the game idled instead of advancing to its frame
+ * work. Return "no pending event" (any non-zero error ends the drain). We don't
+ * dereference the out-params (we report no event), so no translation needed. */
+#ifndef SCE_NP_BASIC_ERROR_NO_EVENT
+#define SCE_NP_BASIC_ERROR_NO_EVENT 0x8002AA09
+#endif
+s32 sceNpBasicGetEvent(u32* event, void* from, void* data, u32* size)
+{
+    (void)event; (void)from; (void)data; (void)size;
+    return (s32)SCE_NP_BASIC_ERROR_NO_EVENT;
+}
+
 s32 sceNpBasicRegisterHandler(SceNpBasicEventHandler handler,
                                SceNpBasicPresenceHandler presenceHandler,
                                void* arg)
