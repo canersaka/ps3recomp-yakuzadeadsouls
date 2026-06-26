@@ -2664,9 +2664,24 @@ def main() -> None:
             if _o.startswith("r1,-") and _o.endswith("(r1)"):
                 _pp = _by_addr.get(_a - 4)
                 if _pp is not None and _pp.mnemonic == "mflr" and _pp.operands.strip() == "r0":
-                    _func_entries.add(_a - 4)
+                    _ent = _a - 4
                 else:
-                    _func_entries.add(_a)
+                    _ent = _a
+                # A function may start with a setup instruction before its
+                # mflr/stdu prologue (e.g. `cmpwi r3,0` that sets cr for a later
+                # branch). The real entry is then a branch/call target a few insns
+                # before the prologue. Adjust back to it, else the prologue is
+                # taken as the entry and the setup insn is orphaned into a 1-insn
+                # fragment with a dangling fall-through (observed: libsre
+                # func_3000AF2C -> an infinite 2-fragment loop hanging
+                # cellSpursInitialize). Only step onto addresses that are real branch
+                # targets, so we never absorb the previous function's tail.
+                for _ in range(2):
+                    if (_ent - 4) in _targets:
+                        _ent -= 4
+                    else:
+                        break
+                _func_entries.add(_ent)
 
     _recovered = []
     _ncuts = 0
@@ -2683,7 +2698,14 @@ def main() -> None:
         _cuts = []
         _j = _k + 1
         while _j < len(_ordered) and _ordered[_j] < _e:
-            if _ordered[_j] in _func_entries:
+            # Skip a prologue within 2 instructions of THIS function's start: it is
+            # the function's own prologue, merely preceded by a setup instruction
+            # (e.g. `cmpwi r3,0` before `mflr r0; stdu`). Splitting there truncates
+            # the function to that one setup insn and dangles its fall-through (seen
+            # on libsre func_3000AF2C -> an infinite 2-fragment loop that hung
+            # cellSpursInitialize). A genuinely merged second function's prologue is
+            # always past the first function's body, well beyond start+8.
+            if _ordered[_j] in _func_entries and _ordered[_j] > _s + 8:
                 _cuts.append(_ordered[_j])
             _j += 1
         if not _cuts:
