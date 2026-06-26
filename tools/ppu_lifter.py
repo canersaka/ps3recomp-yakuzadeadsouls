@@ -2430,17 +2430,22 @@ def discover_jump_tables(all_insns, read_u32, toc, text_lo, text_hi):
 _WORKER_STATE: dict = {}
 
 
-def _worker_init(segs, big_endian, name_map, prefix):
+def _worker_init(segs, big_endian, name_map, prefix, hle_stub_nids=None):
     _WORKER_STATE["segs"] = segs
     _WORKER_STATE["be"] = big_endian
     _WORKER_STATE["names"] = name_map
     _WORKER_STATE["prefix"] = prefix
+    _WORKER_STATE["hle_stub_nids"] = hle_stub_nids or {}
 
 
 def _worker_lift(task):
     idx0, bounds = task
     lifter = PPULifter(prefix=_WORKER_STATE.get("prefix", ""))
     lifter.name_map = _WORKER_STATE["names"]
+    # Import stubs must dispatch as ps3_hle_call in workers too, else the literal
+    # .lib.stub trampoline (which derefs an unpopulated import table) is lifted as
+    # real code and bctrl's to garbage. (Single-threaded lift set this directly.)
+    lifter.hle_stub_nids = _WORKER_STATE.get("hle_stub_nids", {})
     results = []
     for start, end in bounds:
         blob = b""
@@ -2472,7 +2477,8 @@ def _parallel_lift(lifter, func_bounds, segs, big_endian, jobs):
     # blocked at ~11 CPU-s for minutes post-100%, one idle worker left alive).
     # close() (no new tasks) + join() (graceful worker exit) avoids the deadlock.
     pool = mp.Pool(processes=jobs, initializer=_worker_init,
-                   initargs=(segs, big_endian, lifter.name_map, lifter.prefix))
+                   initargs=(segs, big_endian, lifter.name_map, lifter.prefix,
+                             lifter.hle_stub_nids))
     try:
         for idx0, results, ct, bt in pool.imap_unordered(_worker_lift, tasks):
             results_by_idx[idx0] = results

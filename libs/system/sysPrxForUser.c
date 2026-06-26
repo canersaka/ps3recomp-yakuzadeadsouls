@@ -181,12 +181,26 @@ s32 sys_process_is_spu_lock_line_reservation_address(u32 addr, u64 flags)
  * String/memory functions
  * -----------------------------------------------------------------------*/
 
+/* libsre and other system PRXs reach these sysPrxForUser CRT shims through
+ * ps3_hle_call, which forwards the raw GUEST effective address in the arg
+ * registers. Translate guest EA -> host pointer (vm_base + 32-bit EA; guest
+ * NULL stays NULL) before touching memory. The title itself inlines its own
+ * memcpy/memset/str*, so this path first appears once the real libsre is
+ * loaded -- without translation memset(guest_ea, ...) writes to a bare host
+ * address and AVs (observed: _sys_memset write fault during SPURS init). */
+extern u8* vm_base;
+static inline void* yz_g2h(const void* g)
+{
+    u32 ea = (u32)(uintptr_t)g;
+    return ea ? (void*)(vm_base + ea) : (void*)0;
+}
+
 s32 _sys_printf(const char* fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
     printf("[PS3] ");
-    int ret = vprintf(fmt, ap);
+    int ret = vprintf((const char*)yz_g2h(fmt), ap);
     va_end(ap);
     return ret;
 }
@@ -195,7 +209,7 @@ s32 _sys_sprintf(char* buf, const char* fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
-    int ret = vsprintf(buf, fmt, ap);
+    int ret = vsprintf((char*)yz_g2h(buf), (const char*)yz_g2h(fmt), ap);
     va_end(ap);
     return ret;
 }
@@ -204,50 +218,83 @@ s32 _sys_snprintf(char* buf, u32 size, const char* fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
-    int ret = vsnprintf(buf, size, fmt, ap);
+    int ret = vsnprintf((char*)yz_g2h(buf), size, (const char*)yz_g2h(fmt), ap);
     va_end(ap);
     return ret;
 }
 
 s32 _sys_strlen(const char* str)
 {
-    if (!str) return 0;
-    return (s32)strlen(str);
+    char* s = (char*)yz_g2h(str);
+    if (!s) return 0;
+    return (s32)strlen(s);
 }
 
 s32 _sys_strncpy(char* dst, const char* src, u32 size)
 {
-    if (!dst || !src) return CELL_EFAULT;
-    strncpy(dst, src, size);
+    char* d = (char*)yz_g2h(dst); const char* s = (const char*)yz_g2h(src);
+    if (!d || !s) return CELL_EFAULT;
+    strncpy(d, s, size);
     return CELL_OK;
 }
 
 s32 _sys_strcat(char* dst, const char* src)
 {
-    if (!dst || !src) return CELL_EFAULT;
-    strcat(dst, src);
+    char* d = (char*)yz_g2h(dst); const char* s = (const char*)yz_g2h(src);
+    if (!d || !s) return CELL_EFAULT;
+    strcat(d, s);
     return CELL_OK;
 }
 
 s32 _sys_strcmp(const char* s1, const char* s2)
 {
-    if (!s1 || !s2) return -1;
-    return strcmp(s1, s2);
+    const char* a = (const char*)yz_g2h(s1); const char* b = (const char*)yz_g2h(s2);
+    if (!a || !b) return -1;
+    return strcmp(a, b);
+}
+
+/* Returns the destination GUEST pointer (callers such as cellSpurs use the
+ * return value), not the host pointer. */
+char* _sys_strcpy(char* dst, const char* src)
+{
+    char* d = (char*)yz_g2h(dst); const char* s = (const char*)yz_g2h(src);
+    if (d && s) strcpy(d, s);
+    return dst;
+}
+
+char* _sys_strncat(char* dst, const char* src, u32 size)
+{
+    char* d = (char*)yz_g2h(dst); const char* s = (const char*)yz_g2h(src);
+    if (d && s) strncat(d, s, size);
+    return dst;
+}
+
+s32 _sys_strncmp(const char* s1, const char* s2, u32 size)
+{
+    const char* a = (const char*)yz_g2h(s1); const char* b = (const char*)yz_g2h(s2);
+    if (!a || !b) return -1;
+    return strncmp(a, b, size);
 }
 
 void* _sys_memset(void* dst, s32 val, u32 size)
 {
-    return memset(dst, val, size);
+    void* d = yz_g2h(dst);
+    if (d) memset(d, val, size);
+    return dst;
 }
 
 void* _sys_memcpy(void* dst, const void* src, u32 size)
 {
-    return memcpy(dst, src, size);
+    void* d = yz_g2h(dst); const void* s = yz_g2h(src);
+    if (d && s) memcpy(d, s, size);
+    return dst;
 }
 
 s32 _sys_memcmp(const void* s1, const void* s2, u32 size)
 {
-    return memcmp(s1, s2, size);
+    const void* a = yz_g2h(s1); const void* b = yz_g2h(s2);
+    if (!a || !b) return 0;
+    return memcmp(a, b, size);
 }
 
 s32 _sys_toupper(s32 c) { return toupper(c); }
