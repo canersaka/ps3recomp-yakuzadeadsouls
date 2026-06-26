@@ -255,6 +255,10 @@ extern "C" int lv2_try_syscall(ppu_context* ctx);
 extern "C" void lv2_syscall(ppu_context* ctx)
 {
     uint64_t num = ctx->gpr[11];
+    if (getenv("YDKJ_SCTRACE"))
+        fprintf(stderr, "[sc] %llu r3=%08X r4=%08X r5=%08X r6=%08X\n",
+                (unsigned long long)num, (uint32_t)ctx->gpr[3], (uint32_t)ctx->gpr[4],
+                (uint32_t)ctx->gpr[5], (uint32_t)ctx->gpr[6]);
     switch (num) {
     case 352: {   /* sys_memory_get_user_memory_size(sys_memory_info_t* info)
                    * info = { u32 total_user_memory; u32 available_user_memory } */
