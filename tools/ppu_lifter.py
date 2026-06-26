@@ -247,6 +247,14 @@ class LiftedFunction:
     fallthrough_to: int = 0  # if it falls off the end, the continuation address
 
 
+# Max span (bytes) for a mid-function tail-entry / gap wrapper. A real interior
+# entry has a short tail to its function's end; a span larger than this means the
+# target landed in a mis-sized or rodata-misread region, where lifting to the far
+# boundary explodes output/memory. Capping bounds the blast radius (the rare real
+# >24KB tail just truncates; the bogus case becomes a small harmless stub).
+_MAX_MID_TAIL = 0x6000
+
+
 def _last_line_is_terminator(body_lines: list[str]) -> bool:
     """True if the function's last instruction is an unconditional terminator
     (return / internal goto / direct call / syscall / unconditional tail-call)."""
@@ -1989,7 +1997,14 @@ class PPULifter:
                 continue
 
             fstart, fend = container
-            # Lift the tail: from target to fend
+            # Lift the tail: from target to fend, but CAP the span. A mid-entry
+            # whose tail runs for tens of KB almost always means `target` landed
+            # inside a mis-sized / rodata-misread container; lifting target..fend
+            # then explodes output and memory (observed on a seeded lift: one
+            # mid-function pass grew to 4 GB+ before OOM). Real functions have a
+            # short tail from any interior entry; bounding it keeps the common case
+            # exact and turns the pathological case into a harmless truncated stub.
+            fend = min(fend, target + _MAX_MID_TAIL)
             tail_func = self.lift_function(all_insns, target, fend)
             # lift_function already appends to self.functions, so it's included
             # in output. Update defined set so we don't re-generate.
@@ -2008,6 +2023,7 @@ class PPULifter:
             for target in gap_targets:
                 idx = bisect.bisect_right(boundaries, target)
                 bound = boundaries[idx] if idx < len(boundaries) else text_hi
+                bound = min(bound, target + _MAX_MID_TAIL)   # cap span (see above)
                 if bound <= target:
                     continue
                 self.lift_function(all_insns, target, bound)
@@ -2353,8 +2369,14 @@ def _parallel_lift(lifter, func_bounds, segs, big_endian, jobs):
     results_by_idx = {}
     done = 0
     t0 = time.time()
-    with mp.Pool(processes=jobs, initializer=_worker_init,
-                 initargs=(segs, big_endian, lifter.name_map, lifter.prefix)) as pool:
+    # NB: use explicit close()+join() rather than `with mp.Pool() as pool`. The
+    # context manager's __exit__ calls terminate(), which on Windows can hang
+    # indefinitely joining a worker after all results are drained (observed: main
+    # blocked at ~11 CPU-s for minutes post-100%, one idle worker left alive).
+    # close() (no new tasks) + join() (graceful worker exit) avoids the deadlock.
+    pool = mp.Pool(processes=jobs, initializer=_worker_init,
+                   initargs=(segs, big_endian, lifter.name_map, lifter.prefix))
+    try:
         for idx0, results, ct, bt in pool.imap_unordered(_worker_lift, tasks):
             results_by_idx[idx0] = results
             lifter.call_targets |= ct
@@ -2364,6 +2386,12 @@ def _parallel_lift(lifter, func_bounds, segs, big_endian, jobs):
             eta = elapsed / done * (n - done) if done else 0
             print(f"  ... lifted {done}/{n} functions ({100 * done // n}%) "
                   f"elapsed {elapsed / 60:.1f}m eta {eta / 60:.1f}m", flush=True)
+        pool.close()
+        pool.join()
+    except BaseException:
+        pool.terminate()
+        pool.join()
+        raise
 
     for idx0 in sorted(results_by_idx):
         for name, s, e, body, calls, ft in results_by_idx[idx0]:
@@ -2511,8 +2539,13 @@ def main() -> None:
                     try: _targets.add(int(_op, 16))
                     except ValueError: pass
     def _prev_nonnop(j):
+        # Skip inter-function padding: nop/lnop AND alignment data words
+        # (.word 0x0 / .long ...), which the compiler inserts between a function's
+        # blr and the next function's prologue. Without skipping these, a
+        # padded boundary looks like "prologue preceded by .word" and is missed.
         k = j - 1
-        while k >= 0 and _by_addr[_ordered[k]].mnemonic in ("nop", "lnop"):
+        while k >= 0 and (_by_addr[_ordered[k]].mnemonic in ("nop", "lnop")
+                          or _by_addr[_ordered[k]].mnemonic.startswith(".")):
             k -= 1
         return _by_addr[_ordered[k]] if k >= 0 else None
     _recovered = []
@@ -2526,9 +2559,16 @@ def main() -> None:
         while _j < len(_ordered) and _ordered[_j] < _e:
             _a = _ordered[_j]
             _p = _prev_nonnop(_j)
-            if _is_prologue(_by_addr[_a]) and _p is not None and (
-                    _p.mnemonic in _RETURNS
-                    or (_p.mnemonic in _JUMPS and _a in _targets)):
+            # A prologue is a separate function when (a) it is a direct
+            # control-flow target -- something calls/branches to it, so it is a
+            # real entry regardless of what precedes it -- or (b) it immediately
+            # follows a definitive return (skipping padding), which marks a new
+            # function even when reached only indirectly (OPD / vtable). You never
+            # branch into a frame-allocating prologue mid-function, so neither case
+            # cuts a real function with internal forward branches.
+            if _is_prologue(_by_addr[_a]) and (
+                    _a in _targets
+                    or (_p is not None and _p.mnemonic in _RETURNS)):
                 _cuts.append(_a)
             _j += 1
         if not _cuts:
