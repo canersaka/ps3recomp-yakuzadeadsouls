@@ -358,13 +358,24 @@ class PPULifter:
         # PPC falls through to end_addr. The compiler frequently places "outlined"
         # cold blocks just past a function that branch back into it; if the
         # boundary cut the function mid-block, the real continuation lives at
-        # end_addr. Record it and register it for lifting so the fall-through
-        # trampoline targets the TRUE next instruction (which restores the shared
-        # frame), not the next function in address order (which may own its own
-        # frame -> a stack-imbalance leak).
+        # end_addr. Record it so the fall-through trampoline targets the TRUE
+        # next instruction (which restores the shared frame), not the next
+        # function in address order (which may own its own frame -> a
+        # stack-imbalance leak).
+        #
+        # We deliberately do NOT add `end` to self.branch_targets here. Doing so
+        # promotes EVERY fall-through function's end to a func_X, unguarded by the
+        # [code_lo, code_hi) window -- so on an auto-detected lift (no --code-end,
+        # exec segment includes .rodata) the .text/.rodata boundary functions seed
+        # bogus targets in data, and the mid-function tail-entry pass re-emits them
+        # to the next boundary: a multi-GB / OOM source explosion (see code_hi note
+        # in __init__). The emit path (see _func_lines) already resolves
+        # fallthrough_to via func_by_addr, falling back to the next function in
+        # address order -- which starts exactly at `end` for contiguous functions
+        # -- so no promotion is needed for correctness, and merged-function splits
+        # are handled by the boundary-recovery prologue scan instead.
         if not _last_line_is_terminator(func.body_lines):
             func.fallthrough_to = end
-            self.branch_targets.add(end)
 
         self.functions.append(func)
         return func
@@ -2476,7 +2487,14 @@ def main() -> None:
             o = ins.operands.replace(" ", "")
             return o.startswith("r1,-") and o.endswith("(r1)")
         return False
-    _TERMS = {"blr", "b", "bctr", "ba", "rfid", "rfi"}
+    # A prologue right after a definitive RETURN (blr/rfid) is unambiguously a
+    # new function even if it is reached only indirectly (OPD / vtable / function
+    # pointer) -- no need for a direct branch target. A prologue after an
+    # ambiguous JUMP (b/ba/bctr, which may be an intra-function branch or a jump
+    # table) is only treated as a new function when it is also a control-flow
+    # target, so real functions with internal forward branches are never cut.
+    _RETURNS = {"blr", "blrl", "rfid", "rfi"}
+    _JUMPS = {"b", "ba", "bctr"}
     _by_addr = {i.addr: i for i in all_insns}
     _ordered = sorted(_by_addr)
     _idx_of = {a: k for k, a in enumerate(_ordered)}
@@ -2508,8 +2526,9 @@ def main() -> None:
         while _j < len(_ordered) and _ordered[_j] < _e:
             _a = _ordered[_j]
             _p = _prev_nonnop(_j)
-            if (_a in _targets and _is_prologue(_by_addr[_a])
-                    and _p is not None and _p.mnemonic in _TERMS):
+            if _is_prologue(_by_addr[_a]) and _p is not None and (
+                    _p.mnemonic in _RETURNS
+                    or (_p.mnemonic in _JUMPS and _a in _targets)):
                 _cuts.append(_a)
             _j += 1
         if not _cuts:
