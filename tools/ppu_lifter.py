@@ -2457,6 +2457,71 @@ def main() -> None:
         print("No functions found. Use --functions to provide a function list.", file=sys.stderr)
         sys.exit(1)
 
+    # ----- recover merged function boundaries -----------------------------
+    # The call-graph-derived function list can merge several real functions into
+    # one entry (a target reached only by a tail-call `b`, never a `bl`, is not
+    # promoted, so its code is swallowed by the preceding entry). A `b` between
+    # the merged functions then lifts as an internal `goto` instead of a tail
+    # call, so a callee's epilogue runs against the caller's frame -- restoring
+    # lr/sp from the wrong slots and NOT restoring callee-saved registers, which
+    # silently corrupts e.g. r29 in the caller (observed: a loop count overwritten
+    # with the TOC pointer -> 5.5M-iteration hang). A function prologue
+    # (`stdu r1,-N(r1)` or `mflr r0`) in a range's interior, immediately after an
+    # unconditional terminator (blr / b / bctr, skipping nop padding), is a
+    # distinct function: split the range there so the branch becomes a tail call.
+    def _is_prologue(ins):
+        if ins.mnemonic == "mflr" and ins.operands.strip() == "r0":
+            return True
+        if ins.mnemonic in ("stdu", "stwu"):
+            o = ins.operands.replace(" ", "")
+            return o.startswith("r1,-") and o.endswith("(r1)")
+        return False
+    _TERMS = {"blr", "b", "bctr", "ba", "rfid", "rfi"}
+    _by_addr = {i.addr: i for i in all_insns}
+    _ordered = sorted(_by_addr)
+    _idx_of = {a: k for k, a in enumerate(_ordered)}
+    # Collect every direct branch/call target so a split only ever lands on a real
+    # function entry (something jumps or calls to it). This excludes interior code
+    # that merely *looks* like a prologue, so a function with internal forward
+    # branches is never wrongly cut (which would dangle a goto into a tail call).
+    _targets = set()
+    for _i in all_insns:
+        _mn = _i.mnemonic
+        if _mn.startswith("b") and _mn not in ("blr", "blrl", "bctr", "bctrl"):
+            for _op in _parse_operands(_i.operands):
+                if _op.startswith("0x"):
+                    try: _targets.add(int(_op, 16))
+                    except ValueError: pass
+    def _prev_nonnop(j):
+        k = j - 1
+        while k >= 0 and _by_addr[_ordered[k]].mnemonic in ("nop", "lnop"):
+            k -= 1
+        return _by_addr[_ordered[k]] if k >= 0 else None
+    _recovered = []
+    _ncuts = 0
+    for (_s, _e) in func_bounds:
+        _k = _idx_of.get(_s)
+        if _k is None:
+            _recovered.append((_s, _e)); continue
+        _cuts = []
+        _j = _k + 1
+        while _j < len(_ordered) and _ordered[_j] < _e:
+            _a = _ordered[_j]
+            _p = _prev_nonnop(_j)
+            if (_a in _targets and _is_prologue(_by_addr[_a])
+                    and _p is not None and _p.mnemonic in _TERMS):
+                _cuts.append(_a)
+            _j += 1
+        if not _cuts:
+            _recovered.append((_s, _e)); continue
+        _pts = [_s] + _cuts + [_e]
+        for _i in range(len(_pts) - 1):
+            _recovered.append((_pts[_i], _pts[_i + 1]))
+        _ncuts += len(_cuts)
+    if _ncuts:
+        print(f"  Boundary recovery: split {_ncuts} merged function(s) via prologue scan")
+        func_bounds = _recovered
+
     # ----- jump-table (computed bctr) discovery ---------------------------
     # gcc switch dispatchers reach their case blocks via `mtctr; bctr` through
     # a data jump table — computed targets static analysis can't see, so the
