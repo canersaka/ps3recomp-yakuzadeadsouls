@@ -159,6 +159,10 @@ void vm_write64(uint64_t a, uint64_t v) { if (vm_oob((uint32_t)a,8)) return; v =
 /* Cross-fragment trampoline pointer (matches the lifted header's TLS decl). */
 extern "C" __declspec(thread) void (*g_trampoline_fn)(void*) = nullptr;
 
+/* Per-thread active guest context, for the crash handler to report the guest PC
+ * (ctx->pc, updated by lifted code at block boundaries) of a host AV. */
+extern "C" __declspec(thread) ppu_context* g_active_ctx = nullptr;
+
 /* ---------------------------------------------------------------------------
  * Function registry: guest code address -> lifted host function.
  * Open-addressing hash (load factor kept low); 14k+ functions in a real EBOOT.
@@ -208,6 +212,7 @@ extern "C" void ppu_recomp_register(void)
 /* Indirect call (bctrl/bctr): CTR holds the already-OPD-resolved code address. */
 extern "C" void ps3_indirect_call(ppu_context* ctx)
 {
+    g_active_ctx = ctx;
     uint32_t addr = (uint32_t)ctx->ctr;
     /* Null / return-to-OS sentinel: a bctr to address 0 means the guest
      * unwound to the initial frame (or a not-yet-populated function pointer).
@@ -471,6 +476,7 @@ static void ppu_thread_entry_trampoline(ppu_context* ctx)
                 code, (uint32_t)ctx->cia);
         return;
     }
+    g_active_ctx = ctx;
     fn(ctx);
     while (g_trampoline_fn) { void (*tf)(void*) = g_trampoline_fn; g_trampoline_fn = 0; tf(ctx); }
 }
@@ -501,6 +507,8 @@ extern "C" uint64_t ppu_guest_call(uint32_t opd_addr,
     ctx.gpr[3]  = a0; ctx.gpr[4] = a1; ctx.gpr[5] = a2; ctx.gpr[6] = a3;
     ctx.gpr[13] = PPU_TLS_TP;
     ctx.cia     = code;
+    g_active_ctx = &ctx;
+    g_active_ctx = &ctx;
     fn(&ctx);
     while (g_trampoline_fn) { void (*tf)(void*) = g_trampoline_fn; g_trampoline_fn = 0; tf(&ctx); }
     return ctx.gpr[3];
@@ -530,6 +538,7 @@ extern "C" int ppu_run(uint32_t entry_opd, uint32_t stack_top)
         fprintf(stderr, "[ppu] TLS image 0x%08X (r13/TP=0x%08X)\n", PPU_TLS_IMG, PPU_TLS_TP);
     }
     fprintf(stderr, "[ppu] run: code 0x%08X, toc 0x%08X, sp 0x%08X\n", code, toc, stack_top);
+    g_active_ctx = &ctx;
     fn(&ctx);
     while (g_trampoline_fn) { void (*tf)(void*) = g_trampoline_fn; g_trampoline_fn = 0; tf(&ctx); }
     return 0;
