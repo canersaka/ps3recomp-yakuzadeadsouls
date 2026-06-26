@@ -192,6 +192,24 @@ static void dump_threads(const char* label, HMODULE self)
                     fprintf(stderr, "[WATCHDOG]   tid %5lu BOOT rip rva=0x%llX\n",
                             (unsigned long)te.th32ThreadID,
                             (unsigned long long)((char*)ctx.Rip - (char*)self));
+                    /* Scan the suspended thread's stack for boot-module return
+                     * addresses to reconstruct the call chain when there's no
+                     * OOB backtrace to lean on (some false positives expected). */
+                    uint64_t* sp = (uint64_t*)ctx.Rsp;
+                    int found = 0;
+                    for (int k = 0; k < 0x8000 / 8 && found < 16; k++) {
+                        uint64_t v = sp[k];
+                        if (v < (uint64_t)self) continue;
+                        HMODULE mm = NULL;
+                        GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                           GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                           (LPCSTR)v, &mm);
+                        if (mm == self) {
+                            fprintf(stderr, "[WATCHDOG]       ret rva=0x%llX\n",
+                                    (unsigned long long)(v - (uint64_t)self));
+                            found++;
+                        }
+                    }
                 } else {
                     char path[MAX_PATH] = "?";
                     if (m) GetModuleFileNameA(m, path, sizeof path);
