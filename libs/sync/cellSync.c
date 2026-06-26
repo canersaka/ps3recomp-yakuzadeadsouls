@@ -7,6 +7,11 @@
  */
 
 #include "cellSync.h"
+#include <stdint.h>
+#include "../../runtime/ppu/ppu_memory.h"   /* vm_base (guest mem) */
+/* HLE args arrive as guest effective addresses (ps3_hle_call passes raw
+ * guest register values); translate to host before dereferencing. */
+#define GUEST_PTR(p, T) ((T)((p) ? (void*)(vm_base + (uint32_t)(uintptr_t)(p)) : (void*)0))
 #include <stdio.h>
 #include <string.h>
 
@@ -25,6 +30,7 @@
 
 s32 cellSyncMutexInitialize(CellSyncMutex* mutex)
 {
+    mutex = GUEST_PTR(mutex, CellSyncMutex*);
     if (!mutex)
         return CELL_SYNC_ERROR_NULL_POINTER;
 
@@ -34,6 +40,7 @@ s32 cellSyncMutexInitialize(CellSyncMutex* mutex)
 
 s32 cellSyncMutexLock(CellSyncMutex* mutex)
 {
+    mutex = GUEST_PTR(mutex, CellSyncMutex*);
     if (!mutex)
         return CELL_SYNC_ERROR_NULL_POINTER;
 
@@ -54,6 +61,7 @@ s32 cellSyncMutexLock(CellSyncMutex* mutex)
 
 s32 cellSyncMutexTryLock(CellSyncMutex* mutex)
 {
+    mutex = GUEST_PTR(mutex, CellSyncMutex*);
     if (!mutex)
         return CELL_SYNC_ERROR_NULL_POINTER;
 
@@ -66,6 +74,7 @@ s32 cellSyncMutexTryLock(CellSyncMutex* mutex)
 
 s32 cellSyncMutexUnlock(CellSyncMutex* mutex)
 {
+    mutex = GUEST_PTR(mutex, CellSyncMutex*);
     if (!mutex)
         return CELL_SYNC_ERROR_NULL_POINTER;
 
@@ -79,6 +88,7 @@ s32 cellSyncMutexUnlock(CellSyncMutex* mutex)
 
 s32 cellSyncBarrierInitialize(CellSyncBarrier* barrier, u16 totalCount)
 {
+    barrier = GUEST_PTR(barrier, CellSyncBarrier*);
     if (!barrier)
         return CELL_SYNC_ERROR_NULL_POINTER;
 
@@ -94,6 +104,7 @@ s32 cellSyncBarrierInitialize(CellSyncBarrier* barrier, u16 totalCount)
 
 s32 cellSyncBarrierNotify(CellSyncBarrier* barrier)
 {
+    barrier = GUEST_PTR(barrier, CellSyncBarrier*);
     if (!barrier)
         return CELL_SYNC_ERROR_NULL_POINTER;
 
@@ -110,12 +121,14 @@ s32 cellSyncBarrierNotify(CellSyncBarrier* barrier)
 
 s32 cellSyncBarrierTryNotify(CellSyncBarrier* barrier)
 {
+    barrier = GUEST_PTR(barrier, CellSyncBarrier*);
     /* Same as notify for this implementation */
     return cellSyncBarrierNotify(barrier);
 }
 
 s32 cellSyncBarrierWait(CellSyncBarrier* barrier)
 {
+    barrier = GUEST_PTR(barrier, CellSyncBarrier*);
     if (!barrier)
         return CELL_SYNC_ERROR_NULL_POINTER;
 
@@ -135,6 +148,7 @@ s32 cellSyncBarrierWait(CellSyncBarrier* barrier)
 
 s32 cellSyncBarrierTryWait(CellSyncBarrier* barrier)
 {
+    barrier = GUEST_PTR(barrier, CellSyncBarrier*);
     if (!barrier)
         return CELL_SYNC_ERROR_NULL_POINTER;
 
@@ -151,6 +165,8 @@ s32 cellSyncBarrierTryWait(CellSyncBarrier* barrier)
 
 s32 cellSyncRwmInitialize(CellSyncRwm* rwm, void* buffer, u32 size)
 {
+    rwm = GUEST_PTR(rwm, CellSyncRwm*);
+    buffer = GUEST_PTR(buffer, void*);
     if (!rwm || !buffer)
         return CELL_SYNC_ERROR_NULL_POINTER;
 
@@ -167,6 +183,8 @@ s32 cellSyncRwmInitialize(CellSyncRwm* rwm, void* buffer, u32 size)
 
 s32 cellSyncRwmRead(CellSyncRwm* rwm, void* dst)
 {
+    rwm = GUEST_PTR(rwm, CellSyncRwm*);
+    dst = GUEST_PTR(dst, void*);
     if (!rwm || !dst)
         return CELL_SYNC_ERROR_NULL_POINTER;
 
@@ -196,6 +214,8 @@ s32 cellSyncRwmRead(CellSyncRwm* rwm, void* dst)
 
 s32 cellSyncRwmTryRead(CellSyncRwm* rwm, void* dst)
 {
+    rwm = GUEST_PTR(rwm, CellSyncRwm*);
+    dst = GUEST_PTR(dst, void*);
     if (!rwm || !dst)
         return CELL_SYNC_ERROR_NULL_POINTER;
 
@@ -217,6 +237,8 @@ s32 cellSyncRwmTryRead(CellSyncRwm* rwm, void* dst)
 
 s32 cellSyncRwmWrite(CellSyncRwm* rwm, const void* src)
 {
+    rwm = GUEST_PTR(rwm, CellSyncRwm*);
+    src = GUEST_PTR(src, const void*);
     if (!rwm || !src)
         return CELL_SYNC_ERROR_NULL_POINTER;
 
@@ -245,6 +267,8 @@ s32 cellSyncRwmWrite(CellSyncRwm* rwm, const void* src)
 
 s32 cellSyncRwmTryWrite(CellSyncRwm* rwm, const void* src)
 {
+    rwm = GUEST_PTR(rwm, CellSyncRwm*);
+    src = GUEST_PTR(src, const void*);
     if (!rwm || !src)
         return CELL_SYNC_ERROR_NULL_POINTER;
 
@@ -287,6 +311,8 @@ static void queue_spinlock_release(atomic_uint* lock)
 s32 cellSyncQueueInitialize(CellSyncQueue* queue, void* buffer,
                             u32 size, u32 depth)
 {
+    queue = GUEST_PTR(queue, CellSyncQueue*);
+    buffer = GUEST_PTR(buffer, void*);
     if (!queue || !buffer)
         return CELL_SYNC_ERROR_NULL_POINTER;
 
@@ -308,6 +334,8 @@ s32 cellSyncQueueInitialize(CellSyncQueue* queue, void* buffer,
 
 s32 cellSyncQueuePush(CellSyncQueue* queue, const void* data)
 {
+    queue = GUEST_PTR(queue, CellSyncQueue*);
+    data = GUEST_PTR(data, const void*);
     if (!queue || !data)
         return CELL_SYNC_ERROR_NULL_POINTER;
 
@@ -337,6 +365,8 @@ s32 cellSyncQueuePush(CellSyncQueue* queue, const void* data)
 
 s32 cellSyncQueueTryPush(CellSyncQueue* queue, const void* data)
 {
+    queue = GUEST_PTR(queue, CellSyncQueue*);
+    data = GUEST_PTR(data, const void*);
     if (!queue || !data)
         return CELL_SYNC_ERROR_NULL_POINTER;
 
@@ -364,6 +394,8 @@ s32 cellSyncQueueTryPush(CellSyncQueue* queue, const void* data)
 
 s32 cellSyncQueuePop(CellSyncQueue* queue, void* data)
 {
+    queue = GUEST_PTR(queue, CellSyncQueue*);
+    data = GUEST_PTR(data, void*);
     if (!queue || !data)
         return CELL_SYNC_ERROR_NULL_POINTER;
 
@@ -392,6 +424,8 @@ s32 cellSyncQueuePop(CellSyncQueue* queue, void* data)
 
 s32 cellSyncQueueTryPop(CellSyncQueue* queue, void* data)
 {
+    queue = GUEST_PTR(queue, CellSyncQueue*);
+    data = GUEST_PTR(data, void*);
     if (!queue || !data)
         return CELL_SYNC_ERROR_NULL_POINTER;
 
@@ -419,6 +453,8 @@ s32 cellSyncQueueTryPop(CellSyncQueue* queue, void* data)
 
 s32 cellSyncQueuePeek(CellSyncQueue* queue, void* data)
 {
+    queue = GUEST_PTR(queue, CellSyncQueue*);
+    data = GUEST_PTR(data, void*);
     if (!queue || !data)
         return CELL_SYNC_ERROR_NULL_POINTER;
 
@@ -442,6 +478,8 @@ s32 cellSyncQueuePeek(CellSyncQueue* queue, void* data)
 
 s32 cellSyncQueueSize(CellSyncQueue* queue, u32* size)
 {
+    queue = GUEST_PTR(queue, CellSyncQueue*);
+    size = GUEST_PTR(size, u32*);
     if (!queue || !size)
         return CELL_SYNC_ERROR_NULL_POINTER;
 
@@ -451,6 +489,7 @@ s32 cellSyncQueueSize(CellSyncQueue* queue, u32* size)
 
 s32 cellSyncQueueClear(CellSyncQueue* queue)
 {
+    queue = GUEST_PTR(queue, CellSyncQueue*);
     if (!queue)
         return CELL_SYNC_ERROR_NULL_POINTER;
 
@@ -474,6 +513,9 @@ s32 cellSyncLFQueueInitialize(CellSyncLFQueue* queue, void* buffer,
                                u32 size, u32 depth, u32 direction,
                                void* eaSignal)
 {
+    queue = GUEST_PTR(queue, CellSyncLFQueue*);
+    buffer = GUEST_PTR(buffer, void*);
+    eaSignal = GUEST_PTR(eaSignal, void*);
     (void)eaSignal;
 
     if (!queue || !buffer)
@@ -500,6 +542,8 @@ s32 cellSyncLFQueueInitialize(CellSyncLFQueue* queue, void* buffer,
 
 s32 cellSyncLFQueuePush(CellSyncLFQueue* queue, const void* data)
 {
+    queue = GUEST_PTR(queue, CellSyncLFQueue*);
+    data = GUEST_PTR(data, const void*);
     if (!queue || !data)
         return CELL_SYNC_ERROR_NULL_POINTER;
 
@@ -527,6 +571,8 @@ s32 cellSyncLFQueuePush(CellSyncLFQueue* queue, const void* data)
 
 s32 cellSyncLFQueueTryPush(CellSyncLFQueue* queue, const void* data)
 {
+    queue = GUEST_PTR(queue, CellSyncLFQueue*);
+    data = GUEST_PTR(data, const void*);
     if (!queue || !data)
         return CELL_SYNC_ERROR_NULL_POINTER;
 
@@ -554,6 +600,8 @@ s32 cellSyncLFQueueTryPush(CellSyncLFQueue* queue, const void* data)
 
 s32 cellSyncLFQueuePop(CellSyncLFQueue* queue, void* data)
 {
+    queue = GUEST_PTR(queue, CellSyncLFQueue*);
+    data = GUEST_PTR(data, void*);
     if (!queue || !data)
         return CELL_SYNC_ERROR_NULL_POINTER;
 
@@ -581,6 +629,8 @@ s32 cellSyncLFQueuePop(CellSyncLFQueue* queue, void* data)
 
 s32 cellSyncLFQueueTryPop(CellSyncLFQueue* queue, void* data)
 {
+    queue = GUEST_PTR(queue, CellSyncLFQueue*);
+    data = GUEST_PTR(data, void*);
     if (!queue || !data)
         return CELL_SYNC_ERROR_NULL_POINTER;
 
@@ -608,6 +658,8 @@ s32 cellSyncLFQueueTryPop(CellSyncLFQueue* queue, void* data)
 
 s32 cellSyncLFQueueGetDirection(const CellSyncLFQueue* queue, u32* dir)
 {
+    queue = GUEST_PTR(queue, const CellSyncLFQueue*);
+    dir = GUEST_PTR(dir, u32*);
     if (!queue || !dir)
         return CELL_SYNC_ERROR_NULL_POINTER;
 
@@ -617,6 +669,8 @@ s32 cellSyncLFQueueGetDirection(const CellSyncLFQueue* queue, u32* dir)
 
 s32 cellSyncLFQueueDepth(const CellSyncLFQueue* queue, u32* depth)
 {
+    queue = GUEST_PTR(queue, const CellSyncLFQueue*);
+    depth = GUEST_PTR(depth, u32*);
     if (!queue || !depth)
         return CELL_SYNC_ERROR_NULL_POINTER;
 
@@ -626,6 +680,8 @@ s32 cellSyncLFQueueDepth(const CellSyncLFQueue* queue, u32* depth)
 
 s32 cellSyncLFQueueSize(CellSyncLFQueue* queue, u32* size)
 {
+    queue = GUEST_PTR(queue, CellSyncLFQueue*);
+    size = GUEST_PTR(size, u32*);
     if (!queue || !size)
         return CELL_SYNC_ERROR_NULL_POINTER;
 
@@ -635,6 +691,7 @@ s32 cellSyncLFQueueSize(CellSyncLFQueue* queue, u32* size)
 
 s32 cellSyncLFQueueClear(CellSyncLFQueue* queue)
 {
+    queue = GUEST_PTR(queue, CellSyncLFQueue*);
     if (!queue)
         return CELL_SYNC_ERROR_NULL_POINTER;
 

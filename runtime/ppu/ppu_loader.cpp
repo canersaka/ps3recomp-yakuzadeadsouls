@@ -218,8 +218,10 @@ extern "C" void ps3_indirect_call(ppu_context* ctx)
     static int dumped = 0;
     if (dumped < 3) {
         dumped++;
-        fprintf(stderr, "      host_ra=%p (addr2line this against boot_full.exe)\n",
-                __builtin_return_address(0));
+        { void* ra = __builtin_return_address(0); HMODULE m=NULL;
+          GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,(LPCSTR)ra,&m);
+          fprintf(stderr, "      host_ra=%p rva=0x%llX (llvm-symbolizer --obj=ydkj_boot.exe)\n",
+                ra, (unsigned long long)((uintptr_t)ra-(uintptr_t)m)); }
         fprintf(stderr, "      lr=0x%08X r2=0x%08X r3=0x%08X r11=0x%08X r12=0x%08X\n",
                 (uint32_t)ctx->lr, (uint32_t)ctx->gpr[2], (uint32_t)ctx->gpr[3],
                 (uint32_t)ctx->gpr[11], (uint32_t)ctx->gpr[12]);

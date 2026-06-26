@@ -2361,22 +2361,29 @@ def discover_jump_tables(all_insns, read_u32, toc, text_lo, text_hi):
         p = [x.strip() for x in lwzx.operands.split(',')]
         if len(p) != 3:
             continue
-        r_val, _r_idx, r_base = p
+        # `lwzx rD, rA, rB` computes MEM(rA + rB); the table-base register may be
+        # EITHER operand — gcc emits both `lwzx rD, base, idx` and the swapped
+        # `lwzx rD, idx, base`. Try each candidate; the real base is the one
+        # loaded TOC-relative via `lwz base, disp(r2)`. (Hardcoding p[2] as the
+        # base silently skipped every dispatcher with the operands swapped.)
+        r_val = p[0]
+        disp = None; r_base = None
+        for cand in (p[1], p[2]):
+            for w in reversed(win):
+                if w.mnemonic == 'lwz':
+                    a = [x.strip() for x in w.operands.split(',')]
+                    if len(a) == 2 and a[0] == cand and '(r2)' in a[1]:
+                        disp = mem_disp(a[1]); r_base = cand; break
+            if disp is not None:
+                break
+        if disp is None or not toc:
+            continue
         # offset table iff an `add rC, *, r_base` combines the loaded value + base
         is_offset = any(
             w.mnemonic == 'add' and
             [x.strip() for x in w.operands.split(',')][0] == rC and
             r_base in [x.strip() for x in w.operands.split(',')][1:]
             for w in win)
-        # table base pointer: `lwz r_base, disp(r2)` -> *(toc + disp)
-        disp = None
-        for w in reversed(win):
-            if w.mnemonic == 'lwz':
-                a = [x.strip() for x in w.operands.split(',')]
-                if len(a) == 2 and a[0] == r_base and '(r2)' in a[1]:
-                    disp = mem_disp(a[1]); break
-        if disp is None or not toc:
-            continue
         table_base = read_u32((toc + disp) & 0xFFFFFFFF)
         if table_base is None:
             continue

@@ -174,6 +174,7 @@ s32 cellSpursInitialize(CellSpurs* spurs, s32 nSpus, s32 spuPriority,
 
     if (!spurs)
         return CELL_SPURS_CORE_ERROR_NULL_POINTER;
+    spurs = GUEST_PTR(spurs, CellSpurs*);
 
     printf("[cellSpurs] Initialize(nSpus=%d)\n", nSpus);
 
@@ -210,6 +211,7 @@ s32 cellSpursFinalize(CellSpurs* spurs)
 {
     if (!spurs)
         return CELL_SPURS_CORE_ERROR_NULL_POINTER;
+    spurs = GUEST_PTR(spurs, CellSpurs*);
 
     if (!spurs->initialized)
         return CELL_SPURS_CORE_ERROR_STAT;
@@ -258,10 +260,12 @@ s32 cellSpursAttributeSetNamePrefix(CellSpursAttribute* attr,
 {
     if (!attr)
         return CELL_SPURS_CORE_ERROR_NULL_POINTER;
+    attr = GUEST_PTR(attr, CellSpursAttribute*);
+    const char* prefix_h = GUEST_PTR(prefix, const char*);
 
-    if (prefix && size > 0) {
+    if (prefix_h && size > 0) {
         u32 copyLen = size < sizeof(attr->prefix) ? size : sizeof(attr->prefix) - 1;
-        memcpy(attr->prefix, prefix, copyLen);
+        memcpy(attr->prefix, prefix_h, copyLen);
         attr->prefix[copyLen] = '\0';
         attr->prefixSize = copyLen;
     }
@@ -287,11 +291,13 @@ s32 cellSpursGetNumSpuThread(const CellSpurs* spurs, u32* nThreads)
 {
     if (!spurs || !nThreads)
         return CELL_SPURS_CORE_ERROR_NULL_POINTER;
+    spurs = GUEST_PTR(spurs, const CellSpurs*);
+    u32* nThreads_h = GUEST_PTR(nThreads, u32*);
 
     if (!spurs->initialized)
         return CELL_SPURS_CORE_ERROR_STAT;
 
-    *nThreads = spurs->nSpus;
+    *nThreads_h = spurs->nSpus;
     return CELL_OK;
 }
 
@@ -312,10 +318,11 @@ s32 cellSpursSetPriorities(CellSpurs* spurs, CellSpursWorkloadId wid,
                            const u8* priorities)
 {
     if (!spurs || !priorities) return CELL_SPURS_CORE_ERROR_NULL_POINTER;
+    const u8* priorities_h = GUEST_PTR(priorities, const u8*);
     if (wid >= CELL_SPURS_MAX_WORKLOAD) return CELL_SPURS_CORE_ERROR_INVAL;
     if (!s_workloads[wid].in_use) return CELL_SPURS_CORE_ERROR_SRCH;
 
-    memcpy(s_workloads[wid].priority, priorities, CELL_SPURS_MAX_SPU);
+    memcpy(s_workloads[wid].priority, priorities_h, CELL_SPURS_MAX_SPU);
     return CELL_OK;
 }
 
@@ -325,8 +332,9 @@ s32 cellSpursAttachLv2EventQueue(CellSpurs* spurs, u32 queue, u8* port,
     (void)queue; (void)isDynamic;
 
     if (!spurs || !port) return CELL_SPURS_CORE_ERROR_NULL_POINTER;
+    u8* port_h = GUEST_PTR(port, u8*);
 
-    *port = 0; /* give it port 0 */
+    *port_h = 0; /* give it port 0 */
     printf("[cellSpurs] AttachLv2EventQueue(queue=%u)\n", queue);
     return CELL_OK;
 }
@@ -347,6 +355,11 @@ s32 cellSpursCreateTaskset(CellSpurs* spurs, CellSpursTaskset* taskset,
                            u64 args, const u8* priority, u32 maxContention)
 {
     (void)args; (void)priority; (void)maxContention;
+
+    /* Args arrive as guest effective addresses (ps3_hle_call passes raw guest
+     * register values); translate to host before dereferencing. */
+    spurs   = GUEST_PTR(spurs, CellSpurs*);
+    taskset = GUEST_PTR(taskset, CellSpursTaskset*);
 
     if (!spurs || !taskset)
         return CELL_SPURS_TASK_ERROR_NULL_POINTER;
@@ -372,6 +385,7 @@ s32 cellSpursCreateTasksetWithAttribute(CellSpurs* spurs,
 
 s32 cellSpursDestroyTaskset(CellSpursTaskset* taskset)
 {
+    taskset = GUEST_PTR(taskset, CellSpursTaskset*);
     if (!taskset)
         return CELL_SPURS_TASK_ERROR_NULL_POINTER;
 
@@ -382,6 +396,7 @@ s32 cellSpursDestroyTaskset(CellSpursTaskset* taskset)
 
 s32 cellSpursShutdownTaskset(CellSpursTaskset* taskset)
 {
+    taskset = GUEST_PTR(taskset, CellSpursTaskset*);
     if (!taskset)
         return CELL_SPURS_TASK_ERROR_NULL_POINTER;
 
@@ -392,6 +407,7 @@ s32 cellSpursShutdownTaskset(CellSpursTaskset* taskset)
 
 s32 cellSpursJoinTaskset(CellSpursTaskset* taskset)
 {
+    taskset = GUEST_PTR(taskset, CellSpursTaskset*);
     if (!taskset)
         return CELL_SPURS_TASK_ERROR_NULL_POINTER;
 
@@ -403,6 +419,7 @@ s32 cellSpursJoinTaskset(CellSpursTaskset* taskset)
 s32 cellSpursTasksetAttributeInitialize(CellSpursTasksetAttribute* attr)
 {
     if (!attr) return CELL_SPURS_TASK_ERROR_NULL_POINTER;
+    attr = GUEST_PTR(attr, CellSpursTasksetAttribute*);
     memset(attr, 0, sizeof(CellSpursTasksetAttribute));
     attr->revision = 1;
     return CELL_OK;
@@ -426,6 +443,11 @@ s32 cellSpursCreateTask(CellSpursTaskset* taskset, CellSpursTaskId* taskId,
 {
     (void)context; (void)sizeContext; (void)attr;
 
+    /* taskId/taskset are guest EAs; translate before deref. elf/context stay
+     * guest EAs (handled below — elf is translated for load, context kept EA). */
+    taskset = GUEST_PTR(taskset, CellSpursTaskset*);
+    CellSpursTaskId* taskId_h = GUEST_PTR(taskId, CellSpursTaskId*);
+
     if (!taskset)
         return CELL_SPURS_TASK_ERROR_NULL_POINTER;
 
@@ -442,7 +464,7 @@ s32 cellSpursCreateTask(CellSpursTaskset* taskset, CellSpursTaskId* taskId,
             s_tasks[i].exitCode = 0;
             s_tasks[i].entryPoint = elf;
 
-            if (taskId) *taskId = s_tasks[i].id;
+            if (taskId_h) *taskId_h = s_tasks[i].id;
             taskset->taskCount++;
 
             printf("[cellSpurs] CreateTask(id=%u, entry=%p) - task logged\n",
@@ -480,6 +502,7 @@ s32 cellSpursJoinTask(CellSpursTaskset* taskset, CellSpursTaskId taskId,
                       s32* exitCode)
 {
     (void)taskset;
+    s32* exitCode_h = GUEST_PTR(exitCode, s32*);
 
     printf("[cellSpurs] JoinTask(id=%u)\n", taskId);
 
@@ -488,8 +511,8 @@ s32 cellSpursJoinTask(CellSpursTaskset* taskset, CellSpursTaskId taskId,
         if (s_tasks[i].in_use && s_tasks[i].id == taskId) {
             s_tasks[i].completed = 1;
             s_tasks[i].active = 0;
-            if (exitCode)
-                *exitCode = s_tasks[i].exitCode;
+            if (exitCode_h)
+                *exitCode_h = s_tasks[i].exitCode;
             s_tasks[i].in_use = 0;
             return CELL_OK;
         }
@@ -517,6 +540,7 @@ s32 cellSpursSendSignal(CellSpursTaskset* taskset, CellSpursTaskId taskId)
 s32 cellSpursTaskAttributeInitialize(CellSpursTaskAttribute* attr)
 {
     if (!attr) return CELL_SPURS_TASK_ERROR_NULL_POINTER;
+    attr = GUEST_PTR(attr, CellSpursTaskAttribute*);
     memset(attr, 0, sizeof(CellSpursTaskAttribute));
     attr->revision = 1;
     return CELL_OK;
@@ -533,6 +557,11 @@ s32 cellSpursAddWorkload(CellSpurs* spurs, CellSpursWorkloadId* wid,
 {
     if (!spurs || !wid)
         return CELL_SPURS_CORE_ERROR_NULL_POINTER;
+    /* spurs/wid/priority are guest EAs; pm stays a guest EA (it's the SPU
+     * program address consumed later by the workload dispatch). */
+    spurs = GUEST_PTR(spurs, CellSpurs*);
+    CellSpursWorkloadId* wid_h = GUEST_PTR(wid, CellSpursWorkloadId*);
+    const u8* priority_h = GUEST_PTR(priority, const u8*);
 
     if (!spurs->initialized)
         return CELL_SPURS_CORE_ERROR_STAT;
@@ -547,12 +576,12 @@ s32 cellSpursAddWorkload(CellSpurs* spurs, CellSpursWorkloadId* wid,
             s_workloads[i].maxContention = maxContention;
             s_workloads[i].readyCount = 0;
 
-            if (priority)
-                memcpy(s_workloads[i].priority, priority, CELL_SPURS_MAX_SPU);
+            if (priority_h)
+                memcpy(s_workloads[i].priority, priority_h, CELL_SPURS_MAX_SPU);
             else
                 memset(s_workloads[i].priority, 0, CELL_SPURS_MAX_SPU);
 
-            *wid = i;
+            *wid_h = i;
             printf("[cellSpurs] AddWorkload(wid=%u, pm=%p, size=%u)\n",
                    i, pm, sizePm);
             return CELL_OK;
@@ -567,7 +596,10 @@ s32 cellSpursAddWorkloadWithAttribute(CellSpurs* spurs,
                                        const CellSpursWorkloadAttribute* attr)
 {
     if (!attr) return CELL_SPURS_CORE_ERROR_NULL_POINTER;
+    attr = GUEST_PTR(attr, const CellSpursWorkloadAttribute*);
 
+    /* spurs/wid stay guest EAs (cellSpursAddWorkload translates them); attr->pm
+     * and attr->priority are guest EAs carried through verbatim. */
     return cellSpursAddWorkload(spurs, wid, (const void*)(uintptr_t)attr->pm,
                                attr->sizePm, attr->data, attr->priority,
                                attr->minContention, attr->maxContention);
@@ -592,18 +624,20 @@ s32 cellSpursWorkloadAttributeInitialize(CellSpursWorkloadAttribute* attr,
                                          u32 maxContention)
 {
     if (!attr) return CELL_SPURS_CORE_ERROR_NULL_POINTER;
+    attr = GUEST_PTR(attr, CellSpursWorkloadAttribute*);
+    const u8* priority_h = GUEST_PTR(priority, const u8*);
 
     memset(attr, 0, sizeof(CellSpursWorkloadAttribute));
     attr->revision = revision;
     attr->sdkVersion = sdkVersion;
-    attr->pm = (u64)(uintptr_t)pm;
+    attr->pm = (u64)(uintptr_t)pm;   /* pm kept as guest EA */
     attr->sizePm = sizePm;
     attr->data = data;
     attr->minContention = minContention;
     attr->maxContention = maxContention;
 
-    if (priority)
-        memcpy(attr->priority, priority, CELL_SPURS_MAX_SPU);
+    if (priority_h)
+        memcpy(attr->priority, priority_h, CELL_SPURS_MAX_SPU);
 
     return CELL_OK;
 }
@@ -661,6 +695,8 @@ s32 cellSpursEventFlagInitialize(CellSpursTaskset* taskset,
                                  CellSpursEventFlag* eventFlag,
                                  u32 clearMode, u32 direction)
 {
+    taskset = GUEST_PTR(taskset, CellSpursTaskset*);
+    eventFlag = GUEST_PTR(eventFlag, CellSpursEventFlag*);
     (void)taskset;
 
     if (!eventFlag)
@@ -689,6 +725,7 @@ s32 cellSpursEventFlagInitialize(CellSpursTaskset* taskset,
 
 s32 cellSpursEventFlagAttachLv2EventQueue(CellSpursEventFlag* eventFlag)
 {
+    eventFlag = GUEST_PTR(eventFlag, CellSpursEventFlag*);
     if (!eventFlag) return CELL_SPURS_TASK_ERROR_NULL_POINTER;
     printf("[cellSpurs] EventFlagAttachLv2EventQueue()\n");
     return CELL_OK;
@@ -696,6 +733,7 @@ s32 cellSpursEventFlagAttachLv2EventQueue(CellSpursEventFlag* eventFlag)
 
 s32 cellSpursEventFlagDetachLv2EventQueue(CellSpursEventFlag* eventFlag)
 {
+    eventFlag = GUEST_PTR(eventFlag, CellSpursEventFlag*);
     if (!eventFlag) return CELL_SPURS_TASK_ERROR_NULL_POINTER;
     printf("[cellSpurs] EventFlagDetachLv2EventQueue()\n");
     return CELL_OK;
@@ -703,6 +741,7 @@ s32 cellSpursEventFlagDetachLv2EventQueue(CellSpursEventFlag* eventFlag)
 
 s32 cellSpursEventFlagSet(CellSpursEventFlag* eventFlag, u16 bits)
 {
+    eventFlag = GUEST_PTR(eventFlag, CellSpursEventFlag*);
     if (!eventFlag)
         return CELL_SPURS_TASK_ERROR_NULL_POINTER;
 
@@ -724,6 +763,8 @@ s32 cellSpursEventFlagSet(CellSpursEventFlag* eventFlag, u16 bits)
 s32 cellSpursEventFlagWait(CellSpursEventFlag* eventFlag, u16* bits,
                            u32 mode)
 {
+    eventFlag = GUEST_PTR(eventFlag, CellSpursEventFlag*);
+    bits = GUEST_PTR(bits, u16*);
     if (!eventFlag || !bits)
         return CELL_SPURS_TASK_ERROR_NULL_POINTER;
 
@@ -777,6 +818,8 @@ s32 cellSpursEventFlagWait(CellSpursEventFlag* eventFlag, u16* bits,
 s32 cellSpursEventFlagTryWait(CellSpursEventFlag* eventFlag, u16* bits,
                               u32 mode)
 {
+    eventFlag = GUEST_PTR(eventFlag, CellSpursEventFlag*);
+    bits = GUEST_PTR(bits, u16*);
     if (!eventFlag || !bits)
         return CELL_SPURS_TASK_ERROR_NULL_POINTER;
 
@@ -816,6 +859,7 @@ s32 cellSpursEventFlagTryWait(CellSpursEventFlag* eventFlag, u16* bits,
 
 s32 cellSpursEventFlagClear(CellSpursEventFlag* eventFlag, u16 bits)
 {
+    eventFlag = GUEST_PTR(eventFlag, CellSpursEventFlag*);
     if (!eventFlag)
         return CELL_SPURS_TASK_ERROR_NULL_POINTER;
 
@@ -836,6 +880,8 @@ s32 cellSpursEventFlagClear(CellSpursEventFlag* eventFlag, u16 bits)
 s32 cellSpursEventFlagGetDirection(CellSpursEventFlag* eventFlag,
                                    u32* direction)
 {
+    eventFlag = GUEST_PTR(eventFlag, CellSpursEventFlag*);
+    direction = GUEST_PTR(direction, u32*);
     if (!eventFlag || !direction)
         return CELL_SPURS_TASK_ERROR_NULL_POINTER;
 
@@ -856,6 +902,8 @@ s32 _cellSpursEventFlagInitialize(void* spurs, void* taskset,
     printf("[cellSpurs] _EventFlagInitialize(clearMode=%u, dir=%u)\n",
            clearMode, direction);
     if (!eventFlag) return CELL_SPURS_TASK_ERROR_NULL_POINTER;
+    /* Forward raw guest pointers; cellSpursEventFlagInitialize translates them
+     * (translating here too would double-translate -> out-of-bounds). */
     return cellSpursEventFlagInitialize((CellSpursTaskset*)taskset, eventFlag, clearMode, direction);
 }
 
