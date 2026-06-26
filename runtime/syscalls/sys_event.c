@@ -689,7 +689,25 @@ int64_t sys_event_flag_wait(ppu_context* ctx)
     uint32_t mode       = LV2_ARG_U32(ctx, 2);
     uint32_t result_addr = LV2_ARG_PTR(ctx, 3);
     uint64_t timeout_us = LV2_ARG_U64(ctx, 4);
-    fprintf(stderr, "[WAIT] event_flag_wait(flag=%u bits=0x%llX timeout=%llu)\n", flag_id, (unsigned long long)bitpat, (unsigned long long)timeout_us);
+    { static int _w=0; if (_w++ < 40) fprintf(stderr, "[WAIT] event_flag_wait(flag=%u bits=0x%llX timeout=%llu)\n", flag_id, (unsigned long long)bitpat, (unsigned long long)timeout_us); }
+    /* SPU-completion shim (targeted): the main thread spins in func_003319D0 until
+     * *(r29+0x24) (a completion counter the SPU would increment) reaches the target
+     * *(r29). Since we don't yet run the SPU workload, satisfy that counter so the
+     * main thread proceeds into its REAL recompiled render code. r29 is live in ctx
+     * (the loop calls lv2_syscall(ctx) with r3=flag=1000). Endian-agnostic raw copy. */
+    if (bitpat == 0) {
+        /* bits==0 is the degenerate completion-poll (func_003319D0): the loop
+         * spins until *(r29+0x24) == *(r29) -- a counter the SPU would advance.
+         * Satisfy it so the main thread proceeds into real recompiled code. */
+        uint32_t obj = (uint32_t)ctx->gpr[29];
+        uint8_t* tgt = (uint8_t*)vm_to_host(obj);
+        uint8_t* cur = (uint8_t*)vm_to_host(obj + 0x24);
+        static int _n=0; if (_n++ < 12)
+            fprintf(stderr, "[evt] SPU-completion shim: flag=%u r29=0x%08X target=%02X%02X%02X%02X cur=%02X%02X%02X%02X -> satisfied\n",
+                    flag_id, obj, tgt[0],tgt[1],tgt[2],tgt[3], cur[0],cur[1],cur[2],cur[3]);
+        cur[0]=tgt[0]; cur[1]=tgt[1]; cur[2]=tgt[2]; cur[3]=tgt[3];
+        return CELL_OK;
+    }
 
     if (flag_id == 0 || flag_id > SYS_EVENT_FLAG_MAX)
         return (int64_t)(int32_t)CELL_ESRCH;

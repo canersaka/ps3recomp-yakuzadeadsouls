@@ -13,6 +13,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <stdint.h>
+#include "../../runtime/ppu/ppu_memory.h"   /* vm_base (guest mem) */
+/* HLE args arrive as guest effective addresses; translate before deref. */
+#define GUEST_PTR(p, T) ((T)((p) ? (void*)(vm_base + (uint32_t)(uintptr_t)(p)) : (void*)0))
 
 #ifdef _WIN32
 #include <direct.h>
@@ -213,16 +217,18 @@ s32 sceNpTrophyCreateContext(SceNpTrophyContext* context,
 
     if (!context || !commId)
         return SCE_NP_TROPHY_ERROR_INVALID_ARGUMENT;
+    SceNpTrophyContext* context_h = GUEST_PTR(context, SceNpTrophyContext*);
+    const SceNpCommunicationId* commId_h = GUEST_PTR(commId, const SceNpCommunicationId*);
 
     for (s32 i = 0; i < SCE_NP_TROPHY_MAX_CONTEXTS; i++) {
         if (!s_contexts[i].in_use) {
             memset(&s_contexts[i], 0, sizeof(TrophyContext));
             s_contexts[i].in_use = 1;
-            s_contexts[i].commId = *commId;
+            s_contexts[i].commId = *commId_h;
             s_contexts[i].total_trophies = SCE_NP_TROPHY_MAX_NUM_TROPHIES;
-            *context = i;
+            *context_h = i;
             printf("[sceNpTrophy] CreateContext(commId=\"%s\") -> ctx=%d\n",
-                   commId->data, i);
+                   commId_h->data, i);
             return CELL_OK;
         }
     }
@@ -254,6 +260,7 @@ s32 sceNpTrophyCreateHandle(SceNpTrophyHandle* handle)
 
     if (!handle)
         return SCE_NP_TROPHY_ERROR_INVALID_ARGUMENT;
+    handle = GUEST_PTR(handle, SceNpTrophyHandle*);
 
     for (s32 i = 0; i < SCE_NP_TROPHY_MAX_HANDLES; i++) {
         if (!s_handles[i].in_use) {
@@ -325,6 +332,7 @@ s32 sceNpTrophyGetRequiredDiskSpace(SceNpTrophyContext context,
 
     if (!reqSpace)
         return SCE_NP_TROPHY_ERROR_INVALID_ARGUMENT;
+    reqSpace = GUEST_PTR(reqSpace, u64*);
 
     /* Typical trophy pack size */
     *reqSpace = 1024 * 1024; /* 1 MB */
@@ -348,6 +356,8 @@ s32 sceNpTrophyGetGameInfo(SceNpTrophyContext context,
 
     if (!s_contexts[context].registered)
         return SCE_NP_TROPHY_ERROR_CONTEXT_NOT_REGISTERED;
+    details = GUEST_PTR(details, SceNpTrophyGameDetails*);
+    data = GUEST_PTR(data, SceNpTrophyGameData*);
 
     if (details) {
         memset(details, 0, sizeof(SceNpTrophyGameDetails));
@@ -397,6 +407,8 @@ s32 sceNpTrophyGetTrophyInfo(SceNpTrophyContext context,
 
     if (trophyId < 0 || (u32)trophyId >= s_contexts[context].total_trophies)
         return SCE_NP_TROPHY_ERROR_INVALID_ARGUMENT;
+    details = GUEST_PTR(details, SceNpTrophyDetails*);
+    data = GUEST_PTR(data, SceNpTrophyData*);
 
     if (details) {
         memset(details, 0, sizeof(SceNpTrophyDetails));

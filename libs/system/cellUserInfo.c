@@ -7,6 +7,10 @@
 #include "cellUserInfo.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdint.h>
+#include "../../runtime/ppu/ppu_memory.h"   /* vm_base (guest mem) */
+/* HLE args arrive as guest effective addresses; translate before deref. */
+#define GUEST_PTR(p, T) ((T)((p) ? (void*)(vm_base + (uint32_t)(uintptr_t)(p)) : (void*)0))
 
 /* ---------------------------------------------------------------------------
  * Internal state
@@ -29,6 +33,7 @@ s32 cellUserInfoGetStat(u32 id, CellUserInfoUserStat* stat)
 
     if (!stat)
         return CELL_USERINFO_ERROR_PARAM;
+    stat = GUEST_PTR(stat, CellUserInfoUserStat*);
 
     if (id != EMU_USER_ID)
         return CELL_USERINFO_ERROR_NOUSER;
@@ -44,17 +49,20 @@ s32 cellUserInfoGetStat(u32 id, CellUserInfoUserStat* stat)
 s32 cellUserInfoGetList(u32* listNum, CellUserInfoUserList* list, u32* currentUser)
 {
     printf("[cellUserInfo] GetList()\n");
+    u32* listNum_h = GUEST_PTR(listNum, u32*);
+    CellUserInfoUserList* list_h = GUEST_PTR(list, CellUserInfoUserList*);
+    u32* currentUser_h = GUEST_PTR(currentUser, u32*);
 
-    if (listNum)
-        *listNum = 1;
+    if (listNum_h)
+        *listNum_h = 1;
 
-    if (list) {
-        memset(list, 0, sizeof(CellUserInfoUserList));
-        list->userId[0] = EMU_USER_ID;
+    if (list_h) {
+        memset(list_h, 0, sizeof(CellUserInfoUserList));
+        list_h->userId[0] = EMU_USER_ID;
     }
 
-    if (currentUser)
-        *currentUser = EMU_USER_ID;
+    if (currentUser_h)
+        *currentUser_h = EMU_USER_ID;
 
     return CELL_OK;
 }
@@ -84,6 +92,7 @@ s32 cellUserInfoSelectUser_ListGet(u32* selectedUser)
 
     if (!selectedUser)
         return CELL_USERINFO_ERROR_PARAM;
+    selectedUser = GUEST_PTR(selectedUser, u32*);
 
     *selectedUser = s_selected_user;
     return CELL_OK;
@@ -102,6 +111,7 @@ s32 cellUserInfoGetHomeDir(u32 id, char* homePath, u32 homePathSize)
 
     if (!homePath || homePathSize == 0)
         return CELL_USERINFO_ERROR_PARAM;
+    homePath = GUEST_PTR(homePath, char*);
 
     if (id != EMU_USER_ID)
         return CELL_USERINFO_ERROR_NOUSER;
